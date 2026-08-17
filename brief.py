@@ -283,10 +283,15 @@ def item_scan(items, lex):
             for s in h['secs']:
                 if s not in secs:
                     secs.append(s)
+        # 按词库 cat 维度聚合（政策/海外/宏观/产业…），用于前端展示多维影响因素
+        cats = {}
+        for h in hits:
+            c = h.get('cat') or '其他'
+            cats[c] = cats.get(c, 0) + h['dir'] * h['w']
         kws = list(seen.keys())
         matched.append({'title': it['title'], 'brief': it['brief'], 'src': it['src'],
                         'time': it.get('time', ''), 'weight': wsum, 'on': pos, 'off': negw,
-                        'macro_dir': md, 'secs': secs, 'kws': kws})
+                        'macro_dir': md, 'secs': secs, 'kws': kws, 'cats': cats})
     matched.sort(key=lambda x: x['weight'], reverse=True)
     return matched
 
@@ -378,6 +383,25 @@ def main():
     summary_kw = '；'.join(sp) if sp else '当日新闻未触发显著关键词信号。'
     summary = summary_kw
 
+    # 多维影响因素（政策 / 海外 / 宏观 / 产业 …）按 cat 聚合
+    factors = {}
+    for m in matched:
+        for c, score in m.get('cats', {}).items():
+            rec = factors.setdefault(c, {'on': 0.0, 'off': 0.0, 'net': 0.0})
+            if score > 0:
+                rec['on'] += score
+            else:
+                rec['off'] += abs(score)
+            rec['net'] += score
+    for rec in factors.values():
+        total = rec['on'] + rec['off']
+        rec['on'] = round(rec['on'], 1)
+        rec['off'] = round(rec['off'], 1)
+        rec['net'] = round(rec['net'], 1)
+        rec['total'] = round(total, 1)
+        rec['strength'] = round(abs(rec['net']) / total, 2) if total > 0 else 0
+        rec['dir'] = 'on' if rec['net'] > 0 else ('off' if rec['net'] < 0 else 'flat')
+
     # ---- LLM 辅助简报（可选；无 key / 失败自动回退词库，绝不阻塞主流程） ----
     llm = {'used': False, 'model': None, 'error': None}
     providers = [
@@ -409,6 +433,7 @@ def main():
                    'offScore': round(off, 1), 'strength': round(strength, 2)},
         'summary': summary,
         'summary_kw': summary_kw,
+        'factors': factors,
         'llm': llm,
         'items': [{'title': m['title'], 'brief': m['brief'], 'dir': m['macro_dir'],
                    'secs': m['secs'], 'kws': m['kws'], 'src': m['src'], 'time': m['time'],
