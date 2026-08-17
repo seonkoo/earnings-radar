@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-A股财报舆情雷达 —— 服务端抓取脚本（仅标准库，无第三方依赖）
-抓取东方财富「财报公告」→ 判利好/利空 → 聚合「个股参考权重指数」
+财报舆情雷达 v2 —— 服务端抓取（仅标准库，无第三方依赖）
+合并双引擎，输出同一个 latest.json：
+  A. 板块资金流（东方财富 push2，复用 market-radar 验证代码）
+       -> 指数 / 行业板块 / 概念板块 / 个股主力净流入 / 板块历史资金流
+  B. 财报舆情（东方财富公告 np-anotice）
+       -> 财报公告 -> 利好/利空/中性 -> 聚合「个股参考权重」
+归档 snapshots/ + snapshots/index.json（含板块 stats 与财报 overview，供历史回看）。
 
 设计原则（沿用 wolf-screener / market-radar 工程偏好）：
-  - 配置化：HOST / 关键词 / 分页集中在顶部
-  - 关键步骤统计日志：原始 N -> 财报 N -> 利好/利空 N，失败原因可见
-  - 多域名兜底 + 重试；单源失败不影响整体
-  - 拒绝无证据：抓不到就记失败，不伪造数据
-  - 诚实边界：标题关键词判定是启发式，非预测；仅作「财报舆情参考权重」
+  - 配置化、关键步骤统计日志、多域名兜底 + 重试、单源失败不影响整体、抓不到记失败不伪造。
+  - 诚实边界：标题关键词判定是启发式，非预测；仅作「财报舆情参考权重」。
 """
 import json
 import os
@@ -18,37 +20,24 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 # ============================== 配置 ==============================
-ANN_HOSTS = ["np-anotice-stock.eastmoney.com"]   # 东方财富公告（带股票代码，最适合做财报舆情）
+UT = "b2884a393a59ad64002292a3e90d46a5"
+EM_HOSTS = ["push2.eastmoney.com", "push2delay.eastmoney.com"]          # 指数/板块/个股
+EM_HIS_HOSTS = ["push2his.eastmoney.com", "push2delay.eastmoney.com"]   # 历史资金流
+ANN_HOSTS = ["np-anotice-stock.eastmoney.com"]                          # 财报公告（带股票代码）
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-REFERER = "https://data.eastmoney.com/notices/"
+EM_REFERER = "https://quote.eastmoney.com/"
+ANN_REFERER = "https://data.eastmoney.com/notices/"
 TIMEOUT = 15
 RETRY = 3
-PAGE_SIZE = 200                 # 抓取最新 N 条公告（从中筛财报）
+PAGE_SIZE = 200               # 抓取最新 N 条公告（从中筛财报）
+HIST_TOP = 10                 # 行业/概念各取前 N 个拉历史
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CST = timezone(timedelta(hours=8))   # 北京时间
-
-# 财报/业绩相关词（用于筛选公告是否属「财报舆情」）
-FIN_KW = ["业绩", "净利", "营收", "中报", "年报", "季报", "半年报", "一季报", "三季报", "快报",
-          "预增", "预减", "预盈", "首亏", "扭亏", "分红", "送转", "高送转", "利润分配", "财报",
-          "盈利", "亏损", "财务数据", "经营数据", "业绩预告", "业绩快报", "业绩说明会"]
-
-# 利好词（标题命中即计利好，净利好=利好数-利空数）
-BULL_KW = ["预增", "扭亏", "扭亏为盈", "大增", "高增", "超预期", "增长", "创新高", "创纪录", "高送转",
-           "送转", "分红", "利润分配", "派发", "现金分红", "高分红", "股息", "回购", "中标", "签约",
-           "大单", "订单", "提价", "业绩亮眼", "向好", "改善", "盈利", "提升", "上修", "预盈", "翻倍",
-           "亮眼", "提振", "利好", "扩产", "新签", "份额提升", "有望"]
-
-# 利空词
-BEAR_KW = ["预减", "首亏", "续亏", "下滑", "下降", "减少", "减值", "暴雷", "退市", "立案", "罚款",
-           "商誉减值", "不及预期", "下调", "亏损扩大", "变脸", "下修", "警示", "停产", "诉讼", "暴跌",
-           "腰斩", "业绩变脸", "利空", "风险警示", "终止", "违约", "查封", "承压", "弱化", "ST", "*ST",
-           "亏损", "降幅", "减亏", "下挫", "处罚", "降级"]
-
-CODE_RE = re.compile(r"^\d{6}$")
 
 
 def log(msg):
@@ -57,15 +46,29 @@ def log(msg):
 
 
 # ============================== 请求层 ==============================
-def http_get_json(url, timeout=TIMEOUT, retry=RETRY):
+def _strip_jsonp(text, cb):
+    s = text.strip()
+    if s.startswith(cb + "(") or s.startswith(cb + " ("):
+        s = s[s.index("(") + 1:]
+        if s.endswith(");"):
+            s = s[:-2]
+        elif s.endswith(")"):
+            s = s[:-1]
+    return s
+
+
+def http_get_json(url, referer=EM_REFERER, cb_name=None, timeout=TIMEOUT, retry=RETRY):
     last_err = None
     for attempt in range(1, retry + 1):
         try:
             req = urllib.request.Request(url)
             req.add_header("User-Agent", UA)
-            req.add_header("Referer", REFERER)
+            req.add_header("Referer", referer)
+            req.add_header("Accept", "*/*")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8", "ignore")
+            if cb_name:
+                raw = _strip_jsonp(raw, cb_name)
             return json.loads(raw)
         except Exception as e:  # noqa: BLE001
             last_err = e
@@ -75,19 +78,110 @@ def http_get_json(url, timeout=TIMEOUT, retry=RETRY):
     raise last_err or RuntimeError("未知错误")
 
 
-def fetch_announcements(page_size=PAGE_SIZE):
-    last = None
-    for host in ANN_HOSTS:
+def clist_url(host, fs, pz, fields):
+    return ("https://" + host + "/api/qt/clist/get?pn=1&pz=" + str(pz) +
+            "&po=1&np=1&ut=" + UT + "&fltt=2&invt=2&fid=f62&fs=" +
+            urllib.parse.quote(fs, safe="") + "&fields=" + fields)
+
+
+def ulist_url(host, secids, fields):
+    return ("https://" + host + "/api/qt/ulist.np/get?fltt=2&invt=2&fields=" +
+            fields + "&secids=" + secids + "&ut=" + UT)
+
+
+def his_url(host, secid):
+    return ("https://" + host + "/api/qt/stock/fflow/daykline/get?lmt=30&klt=101&secid=" +
+            secid + "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63&ut=" + UT)
+
+
+def norm_diff(d):
+    if not d:
+        return []
+    data = d.get("data")
+    if not data:
+        return []
+    diff = data.get("diff")
+    if diff is None:
+        return []
+    return list(diff.values()) if isinstance(diff, dict) else (diff if isinstance(diff, list) else [])
+
+
+def norm_klines(d):
+    if not d:
+        return None
+    data = d.get("data")
+    if not data:
+        return None
+    return data.get("klines")
+
+
+# ============================== 板块资金流引擎 (A) ==============================
+def fetch_boards(fs, pz):
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in EM_HOSTS:
         try:
-            url = ("https://" + host + "/api/security/ann?sr=-1&page_size=" + str(page_size) +
-                   "&page_index=1&client_source=web")
-            d = http_get_json(url)
-            data = d.get("data") or {}
-            return data.get("list") or []
+            url = clist_url(host, fs, pz, "f2,f3,f8,f10,f12,f14,f62,f66,f72,f78,f84,f104,f105,f184") + "&cb=" + cb
+            return norm_diff(http_get_json(url, EM_REFERER, cb))
         except Exception as e:  # noqa: BLE001
-            last = e
-            log(f"    · 域名 {host} 公告失败: {e}")
-    raise last or RuntimeError("全部公告域名失败")
+            log(f"    · 域名 {host} 板块列表失败: {e}")
+    return []
+
+
+def fetch_indices():
+    secids = "1.000001,0.399001,0.399006,1.000300,1.000905,1.000688"
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in EM_HOSTS:
+        try:
+            url = ulist_url(host, secids, "f2,f3,f6,f12,f14") + "&cb=" + cb
+            return norm_diff(http_get_json(url, EM_REFERER, cb))
+        except Exception as e:  # noqa: BLE001
+            log(f"    · 域名 {host} 指数失败: {e}")
+    return []
+
+
+def fetch_stocks():
+    fs = ("m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,"
+          "m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2")
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in EM_HOSTS:
+        try:
+            url = clist_url(host, fs, 12, "f2,f3,f10,f12,f14,f62,f184") + "&cb=" + cb
+            return norm_diff(http_get_json(url, EM_REFERER, cb))
+        except Exception as e:  # noqa: BLE001
+            log(f"    · 域名 {host} 个股失败: {e}")
+    return []
+
+
+def fetch_history(secid):
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in EM_HIS_HOSTS:
+        try:
+            url = his_url(host, secid) + "&cb=" + cb
+            kl = norm_klines(http_get_json(url, EM_REFERER, cb))
+            if kl and len(kl) >= 2:
+                return kl
+            log(f"    · 域名 {host} 历史仅 {len(kl) if kl else 0} 天")
+        except Exception as e:  # noqa: BLE001
+            log(f"    · 域名 {host} 历史失败: {e}")
+    return None
+
+
+# ============================== 财报舆情引擎 (B) ==============================
+FIN_KW = ["业绩", "净利", "营收", "中报", "年报", "季报", "半年报", "一季报", "三季报", "快报",
+          "预增", "预减", "预盈", "首亏", "扭亏", "分红", "送转", "高送转", "利润分配", "财报",
+          "盈利", "亏损", "财务数据", "经营数据", "业绩预告", "业绩快报", "业绩说明会"]
+
+BULL_KW = ["预增", "扭亏", "扭亏为盈", "大增", "高增", "超预期", "增长", "创新高", "创纪录", "高送转",
+           "送转", "分红", "利润分配", "派发", "现金分红", "高分红", "股息", "回购", "中标", "签约",
+           "大单", "订单", "提价", "业绩亮眼", "向好", "改善", "盈利", "提升", "上修", "预盈", "翻倍",
+           "亮眼", "提振", "利好", "扩产", "新签", "份额提升", "有望"]
+
+BEAR_KW = ["预减", "首亏", "续亏", "下滑", "下降", "减少", "减值", "暴雷", "退市", "立案", "罚款",
+           "商誉减值", "不及预期", "下调", "亏损扩大", "变脸", "下修", "警示", "停产", "诉讼", "暴跌",
+           "腰斩", "业绩变脸", "利空", "风险警示", "终止", "违约", "查封", "承压", "弱化", "ST", "*ST",
+           "亏损", "降幅", "减亏", "下挫", "处罚", "降级"]
+
+CODE_RE = re.compile(r"^\d{6}$")
 
 
 def is_financial(title):
@@ -133,19 +227,31 @@ def item_date(item):
     return ""
 
 
-def main():
-    run_start = datetime.now(CST)
-    today = run_start.strftime("%Y-%m-%d")
-    log("=== 财报舆情抓取（北京 %s）===" % run_start.strftime("%Y-%m-%d %H:%M:%S"))
+def fetch_announcements(page_size=PAGE_SIZE):
+    last = None
+    for host in ANN_HOSTS:
+        try:
+            url = ("https://" + host + "/api/security/ann?sr=-1&page_size=" + str(page_size) +
+                   "&page_index=1&client_source=web")
+            d = http_get_json(url, ANN_REFERER)
+            data = d.get("data") or {}
+            return data.get("list") or []
+        except Exception as e:  # noqa: BLE001
+            last = e
+            log(f"    · 域名 {host} 公告失败: {e}")
+    raise last or RuntimeError("全部公告域名失败")
 
+
+def build_earnings():
+    """引擎 B：财报舆情 -> 个股参考权重。返回 dict（overview/stocks/items）。"""
     try:
         raw = fetch_announcements()
     except Exception as e:  # noqa: BLE001
-        log("❌ 抓取失败: " + str(e))
+        log("❌ 财报公告抓取失败: " + str(e))
         raw = []
     log(f"    -> 原始公告 {len(raw)} 条")
 
-    # 今日（北京时间）发布的财报公告
+    today = datetime.now(CST).strftime("%Y-%m-%d")
     items = []
     for it in raw:
         title = it.get("title") or it.get("title_ch") or ""
@@ -156,15 +262,11 @@ def main():
             continue
         if item_date(it) != today:
             continue
-        items.append({
-            "title": title,
-            "stocks": stocks,
-            "sentiment": classify(title),
-            "date": item_date(it),
-            "art_code": it.get("art_code") or "",
-        })
+        items.append({"title": title, "stocks": stocks,
+                      "sentiment": classify(title), "date": item_date(it),
+                      "art_code": it.get("art_code") or ""})
 
-    # 兜底：若今日过滤后为空（周末/节假日/时区差），放宽到最近财报公告
+    # 兜底：今日为空（周末/节假日/时区差）放宽到最近财报公告
     if not items:
         log("    · 今日无匹配，放宽到最近财报公告")
         for it in raw:
@@ -174,15 +276,10 @@ def main():
             stocks = extract_stocks(it)
             if not stocks:
                 continue
-            items.append({
-                "title": title,
-                "stocks": stocks,
-                "sentiment": classify(title),
-                "date": item_date(it),
-                "art_code": it.get("art_code") or "",
-            })
+            items.append({"title": title, "stocks": stocks,
+                          "sentiment": classify(title), "date": item_date(it),
+                          "art_code": it.get("art_code") or ""})
         items = items[:50]
-
     log(f"    -> 财报相关 {len(items)} 条")
 
     # 聚合个股参考权重
@@ -194,44 +291,102 @@ def main():
                                    "bull": 0, "bear": 0, "neutral": 0, "items": []})
             a[it["sentiment"]] += 1
             a["items"].append({"t": it["title"], "s": it["sentiment"]})
-
     for k, a in agg.items():
         tot = a["bull"] + a["bear"] + a["neutral"]
         net = a["bull"] - a["bear"]
         a["net"] = net
         a["total"] = tot
         a["weight"] = round(50 + 50 * net / tot) if tot else 50
+    stocks_sorted = sorted(agg.values(), key=lambda x: (-x["net"], -x["total"]))
 
-    stocks = sorted(agg.values(), key=lambda x: (-x["net"], -x["total"]))
     overview = {
         "bull": sum(1 for i in items if i["sentiment"] == "bull"),
         "bear": sum(1 for i in items if i["sentiment"] == "bear"),
         "neutral": sum(1 for i in items if i["sentiment"] == "neutral"),
         "total": len(items),
     }
-    ok = overview["total"] > 0
+    return {"overview": overview, "stocks": stocks_sorted[:60], "items": items[:120]}
+
+
+# ============================== 主流程 ==============================
+def main():
+    run_start = datetime.now(CST)
+    log("=== 财报舆情雷达 v2 抓取（北京 %s）===" % run_start.strftime("%Y-%m-%d %H:%M:%S"))
+    stats = {"indices": 0, "industry": 0, "concept": 0, "stocks": 0, "hist_ok": 0, "hist_fail": 0}
+
+    # ---- 引擎 A：板块资金流 ----
+    log("① 指数 ...")
+    indices = fetch_indices()
+    stats["indices"] = len(indices)
+    log(f"    -> 指数 {stats['indices']} 条")
+
+    log("② 行业板块 (fs=m:90+t:2) ...")
+    industry = fetch_boards("m:90+t:2", 30)
+    stats["industry"] = len(industry)
+    log(f"    -> 行业 {stats['industry']} 条")
+
+    log("③ 概念板块 (fs=m:90+t:3) ...")
+    concept = fetch_boards("m:90+t:3", 30)
+    stats["concept"] = len(concept)
+    log(f"    -> 概念 {stats['concept']} 条")
+
+    log("④ 个股主力净流入 TOP12 ...")
+    stocks = fetch_stocks()
+    stats["stocks"] = len(stocks)
+    log(f"    -> 个股 {stats['stocks']} 条")
+
+    hist = {}
+    top_boards = [b for b in industry[:HIST_TOP]] + [b for b in concept[:HIST_TOP]]
+    log(f"⑤ 历史资金流（{len(top_boards)} 个板块）...")
+    for b in top_boards:
+        code = b.get("f12")
+        if not code:
+            continue
+        kl = fetch_history("90." + code)
+        if kl:
+            hist[code] = kl
+            stats["hist_ok"] += 1
+        else:
+            stats["hist_fail"] += 1
+    log(f"    -> 历史成功 {stats['hist_ok']}，失败 {stats['hist_fail']}")
+
+    # ---- 引擎 B：财报舆情 ----
+    log("⑥ 财报舆情 ...")
+    earnings = build_earnings()
+    log(f"    -> 财报 利好/利空/中性 = {earnings['overview']['bull']}/{earnings['overview']['bear']}/{earnings['overview']['neutral']}，涉及 {len(earnings['stocks'])} 只")
+
+    boards_ok = stats["indices"] and (stats["industry"] or stats["concept"])
+    earn_ok = earnings["overview"]["total"] > 0
+    ok = boards_ok or earn_ok
     result = {
         "updated": run_start.strftime("%Y-%m-%dT%H:%M:%S+08:00"),
         "source": "server-snapshot",
-        "status": "ok" if ok else "empty",
-        "filter_date": today,
-        "overview": overview,
-        "stocks": stocks[:60],
-        "items": items[:120],
+        "status": "ok" if ok else "partial",
+        "stats": stats,
+        "indices": indices,
+        "industry": industry,
+        "concept": concept,
+        "stocks": stocks,
+        "hist": hist,
+        "earnings": earnings,
     }
 
-    with open(os.path.join(ROOT, "latest.json"), "w", encoding="utf-8") as f:
+    latest_path = os.path.join(ROOT, "latest.json")
+    with open(latest_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
+    log(f"✅ 写入 latest.json（{os.path.getsize(latest_path)} 字节）")
 
+    # 归档快照
     stamp = run_start.strftime("%Y-%m-%d-%H%M")
     snap_dir = os.path.join(ROOT, "snapshots")
     os.makedirs(snap_dir, exist_ok=True)
     with open(os.path.join(snap_dir, stamp + ".json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(snap_dir, stamp + ".overview.json"), "w", encoding="utf-8") as f:
-        json.dump({"time": result["updated"], "overview": overview}, f,
+        json.dump({"time": result["updated"], "earnings": earnings["overview"]}, f,
                   ensure_ascii=False, separators=(",", ":"))
 
+    # 更新索引（含板块 stats + 财报 overview，供历史回看）
     idx_path = os.path.join(snap_dir, "index.json")
     index = []
     if os.path.exists(idx_path):
@@ -240,14 +395,20 @@ def main():
                 index = json.load(f)
         except Exception:  # noqa: BLE001
             index = []
-    index.insert(0, {"time": result["updated"], "status": result["status"],
-                    "overview": overview, "file": "snapshots/" + stamp + ".json"})
+    index.insert(0, {
+        "time": result["updated"],
+        "status": result["status"],
+        "stats": stats,
+        "earnings": earnings["overview"],
+        "file": "snapshots/" + stamp + ".json",
+    })
     index = index[:90]
     with open(idx_path, "w", encoding="utf-8") as f:
         json.dump(index, f, ensure_ascii=False, indent=2)
 
-    log("✅ 完成 状态=%s 利好/利空/中性=%d/%d/%d 涉及个股=%d" % (
-        result["status"], overview["bull"], overview["bear"], overview["neutral"], len(stocks)))
+    log("=== 完成：板块=%s，财报=%s ===" % (
+        (stats["indices"], stats["industry"], stats["concept"], stats["stocks"]),
+        earnings["overview"]))
     return 0 if ok else 2
 
 
@@ -261,8 +422,11 @@ if __name__ == "__main__":
             "source": "server-snapshot",
             "status": "error",
             "error": str(e),
-            "overview": {"bull": 0, "bear": 0, "neutral": 0, "total": 0},
-            "stocks": [], "items": [],
+            "stats": {"indices": 0, "industry": 0, "concept": 0, "stocks": 0,
+                      "hist_ok": 0, "hist_fail": 0},
+            "indices": [], "industry": [], "concept": [], "stocks": [], "hist": {},
+            "earnings": {"overview": {"bull": 0, "bear": 0, "neutral": 0, "total": 0},
+                         "stocks": [], "items": []},
         }
         with open(os.path.join(ROOT, "latest.json"), "w", encoding="utf-8") as f:
             json.dump(err, f, ensure_ascii=False, separators=(",", ":"))

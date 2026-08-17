@@ -29,15 +29,21 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 抓取东方财富财报公告并生成快照
+      - name: 抓取东方财富（板块资金流 + 财报公告）并生成快照
         run: python generate.py
 
-      - name: 提交快照（latest.json + 归档）
+      - name: 生成每日要闻简报（含可选 LLM 辅助：设 ZHIPU_API_KEY / SILICONFLOW_API_KEY 即启用，未设则词库生成）
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+        run: python brief.py
+
+      - name: 提交快照与简报（latest.json + brief.json + 归档）
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore: 财报舆情快照 $(date +'%Y-%m-%d %H:%M %Z')" || echo "no changes"
+          git commit -m "chore: 多维快照 + 每日要闻 $(date +'%Y-%m-%d %H:%M %Z')" || echo "no changes"
           git push
 
       - name: 启用 GitHub Pages（首次自动开启，之后幂等）
@@ -45,5 +51,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api -X POST /repos/${{ github.repository }}/pages \
-            -F source='{"branch":"main","path":"/"}' \
-            -F build_type=legacy || true
+            -f source[branch]=main \
+            -f source[path]=/ || true
