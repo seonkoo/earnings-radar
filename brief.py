@@ -4,7 +4,7 @@
 brief.py — 每日要闻简报生成器（服务端，GitHub Actions 运行）
 抓取最新财经新闻 → 词库匹配筛选 → 按"进攻/平缓/避险"分组 → 输出 brief.json
 数据源（多源广度，按可用情况叠加）：
-  新浪财经 7x24 滚动（主） + 同花顺快讯（主） + 财联社电报（主） + 东方财富快讯（备）
+  同花顺快讯（主·优先） + 财联社电报（主） + 新浪财经 7x24 滚动（主·综合补充） + 东方财富快讯（备）
 无第三方依赖（仅标准库 urllib / json / re / datetime）。
 """
 import json, os, re, urllib.request, urllib.error, datetime
@@ -302,15 +302,7 @@ def main():
 
     items = []
     src_stat = []
-    # 主源 1：新浪财经 7x24
-    try:
-        raw = http_get(SINA_URL, headers=UA_SINA)
-        sina = parse_sina(raw)
-        items = items + sina
-        src_stat.append('新浪财经 %d 条' % len(sina))
-    except Exception as e:
-        src_stat.append('新浪财经 失败: %s' % e)
-    # 主源 2：同花顺快讯
+    # 主源 1：同花顺快讯（A股靶向，优先）
     try:
         raw = http_get(THS_URL, headers=UA_THS)
         ths = parse_ths(raw)
@@ -318,7 +310,7 @@ def main():
         src_stat.append('同花顺 %d 条' % len(ths))
     except Exception as e:
         src_stat.append('同花顺 失败: %s' % e)
-    # 主源 3：财联社电报（服务端缓存代理，无需签名）
+    # 主源 2：财联社电报（服务端缓存代理，无需签名）
     try:
         import time as _time
         raw = http_get(CLS_URL % int(_time.time()), headers=UA_CLS)
@@ -327,6 +319,14 @@ def main():
         src_stat.append('财联社 %d 条' % len(cls))
     except Exception as e:
         src_stat.append('财联社 失败: %s' % e)
+    # 主源 3：新浪财经 7x24（综合广度补充）
+    try:
+        raw = http_get(SINA_URL, headers=UA_SINA)
+        sina = parse_sina(raw)
+        items = items + sina
+        src_stat.append('新浪财经 %d 条' % len(sina))
+    except Exception as e:
+        src_stat.append('新浪财经 失败: %s' % e)
     # 跨源去重（避免同一事件被多源重复加权）
     before = len(items)
     items = dedup_items(items)
