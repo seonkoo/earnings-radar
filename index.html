@@ -177,7 +177,7 @@ async function liveRefresh(){
   const btn=document.getElementById("refresh");btn.textContent="⏳ 实时抓取中…";
   try{
     const url="https://np-anotice-stock.eastmoney.com/api/security/ann?sr=-1&page_size=200&page_index=1&client_source=web";
-    const r=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://data.eastmoney.com/notices/"}});
+    const r=await fetch(url);
     if(!r.ok)throw 0;
     const j=await r.json();
     const list=(j.data&&j.data.list)||[];
