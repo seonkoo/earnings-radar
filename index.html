@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>财报舆情雷达</title>
+<style>
+  :root{
+    --bg:#0f1419; --card:#1a212b; --card2:#222b38; --txt:#e6edf3; --sub:#8b98a8;
+    --bull:#26a269; --bear:#e5534b; --neu:#6e7b8c; --line:#2b3645; --acc:#4c9aff;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:12px 12px 40px}
+  h1{font-size:19px;margin:0 0 2px}
+  .sub{color:var(--sub);font-size:12px;margin-bottom:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+  .ov{display:flex;gap:8px}
+  .ov .b{flex:1;text-align:center;background:var(--card2);border-radius:10px;padding:10px 4px}
+  .ov .n{font-size:22px;font-weight:700}
+  .ov .l{font-size:12px;color:var(--sub);margin-top:2px}
+  .bull{color:var(--bull)} .bear{color:var(--bear)} .neu{color:var(--neu)}
+  .sec-t{font-size:14px;font-weight:700;margin:0 0 8px;display:flex;justify-content:space-between;align-items:center}
+  .sec-t .tag{font-size:11px;font-weight:400;color:var(--sub)}
+  .stock{background:var(--card2);border-radius:10px;padding:9px 10px;margin-bottom:8px}
+  .stock .top{display:flex;justify-content:space-between;align-items:center}
+  .stock .nm{font-weight:600} .stock .cd{color:var(--sub);font-size:12px;margin-left:6px}
+  .stock .net{font-weight:700;font-size:15px}
+  .bar{height:7px;border-radius:4px;background:#2b3645;margin-top:7px;overflow:hidden;position:relative}
+  .bar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#56627a}
+  .bar .fill{height:100%;border-radius:4px}
+  .item{border-left:3px solid var(--neu);background:var(--card2);border-radius:8px;padding:8px 10px;margin-bottom:7px}
+  .item.bull{border-color:var(--bull)} .item.bear{border-color:var(--bear)}
+  .item .h{display:flex;gap:6px;align-items:center;margin-bottom:3px}
+  .pill{font-size:11px;padding:1px 7px;border-radius:10px;font-weight:600}
+  .pill.bull{background:rgba(38,162,105,.18);color:var(--bull)}
+  .pill.bear{background:rgba(229,83,75,.18);color:var(--bear)}
+  .pill.neu{background:rgba(110,123,140,.18);color:var(--neu)}
+  .item .ti{font-size:13.5px;line-height:1.4}
+  .item .sc{font-size:11px;color:var(--sub);margin-top:3px}
+  .hist{width:100%;border-collapse:collapse;font-size:12px}
+  .hist th,.hist td{padding:5px 4px;text-align:center;border-bottom:1px solid var(--line)}
+  .hist th{color:var(--sub);font-weight:500}
+  .btn{display:block;width:100%;background:var(--acc);color:#fff;border:0;border-radius:12px;padding:12px;font-size:15px;font-weight:600;margin:4px 0 16px}
+  .btn:active{opacity:.8}
+  .note{font-size:11px;color:var(--sub);line-height:1.5}
+  .empty{color:var(--sub);font-size:13px;text-align:center;padding:18px 0}
+  .src{font-size:11px;color:var(--sub);margin-top:6px}
+</style>
+</head>
+<body>
+  <h1>📊 财报舆情雷达</h1>
+  <div class="sub" id="meta">加载中…</div>
+
+  <button class="btn" id="refresh">🔄 实时刷新（手机直连东方财富）</button>
+
+  <div class="card">
+    <div class="ov">
+      <div class="b"><div class="n bull" id="ovBull">–</div><div class="l">利好</div></div>
+      <div class="b"><div class="n bear" id="ovBear">–</div><div class="l">利空</div></div>
+      <div class="b"><div class="n neu" id="ovNeu">–</div><div class="l">中性</div></div>
+    </div>
+    <div class="src" id="ovSrc"></div>
+  </div>
+
+  <div class="card">
+    <div class="sec-t">🎯 个股参考权重榜 <span class="tag" id="stkTag"></span></div>
+    <div id="stocks"><div class="empty">无数据</div></div>
+    <div class="note">权重 = 50 + 50×净情绪/提及数（0–100，50 为中性）。净情绪 = 利好数 − 利空数。仅作财报舆情参考，非涨跌预测。</div>
+  </div>
+
+  <div class="card">
+    <div class="sec-t">📰 财报公告流 <span class="tag" id="itTag"></span></div>
+    <div id="items"><div class="empty">无数据</div></div>
+  </div>
+
+  <div class="card">
+    <div class="sec-t">🗓️ 历史快照（近 14 日）</div>
+    <div id="hist"><div class="empty">无历史</div></div>
+    <div class="note">每次定时抓取都会归档一帧，回来可回看这 7–8 天的财报舆情变化。</div>
+  </div>
+
+  <div class="note">
+    数据来源：东方财富公开财报公告接口（服务端 GitHub Actions 每日 08:30 / 22:00 北京时间抓取归档；手机端可实时直连兜底）。<br>
+    利好/利空为标题关键词启发式判定，存在误差，仅供学习参考，不构成任何投资建议。
+  </div>
+
+<script>
+// ===== 关键词（与 generate.py 保持一致）=====
+const FIN_KW=["业绩","净利","营收","中报","年报","季报","半年报","一季报","三季报","快报","预增","预减","预盈","首亏","扭亏","分红","送转","高送转","利润分配","财报","盈利","亏损","财务数据","经营数据","业绩预告","业绩快报","业绩说明会"];
+const BULL_KW=["预增","扭亏","扭亏为盈","大增","高增","超预期","增长","创新高","创纪录","高送转","送转","分红","利润分配","派发","现金分红","高分红","股息","回购","中标","签约","大单","订单","提价","业绩亮眼","向好","改善","盈利","提升","上修","预盈","翻倍","亮眼","提振","利好","扩产","新签","份额提升","有望"];
+const BEAR_KW=["预减","首亏","续亏","下滑","下降","减少","减值","暴雷","退市","立案","罚款","商誉减值","不及预期","下调","亏损扩大","变脸","下修","警示","停产","诉讼","暴跌","腰斩","业绩变脸","利空","风险警示","终止","违约","查封","承压","弱化","ST","*ST","亏损","降幅","减亏","下挫","处罚","降级"];
+const isFin=t=>FIN_KW.some(k=>t.includes(k));
+function classify(t){let b=0,r=0;BULL_KW.forEach(k=>{if(t.includes(k))b++});BEAR_KW.forEach(k=>{if(t.includes(k))r++});return b>r?"bull":r>b?"bear":"neutral";}
+function extractStocks(it){const out=[];const seen=new Set();(it.codes||[]).forEach(c=>{const code=c.stock_code||"";if(!/^\d{6}$/.test(code))return;const at=c.ann_type||"";if(at.indexOf("A")<0&&at.indexOf("SHA")<0&&at.indexOf("SZA")<0)return;if(seen.has(code))return;seen.add(code);out.push({code,name:c.short_name||""});});return out;}
+function itemDate(it){for(const k of ["display_time","eiTime","notice_date","sort_date"]){if(it[k])return String(it[k]).slice(0,10);}return "";}
+function todayStr(){const d=new Date();const o=new Date(d.getTime()+8*3600*1000);return o.toISOString().slice(0,10);}
+
+function aggregate(items){
+  const agg={};
+  items.forEach(it=>{it.stocks.forEach(s=>{const k=s.code;if(!agg[k])agg[k]={code:k,name:s.name,bull:0,bear:0,neutral:0,items:[]};agg[k][it.sentiment]=(agg[k][it.sentiment]||0)+1;agg[k].items.push({t:it.title,s:it.sentiment});});});
+  const arr=Object.values(agg);
+  arr.forEach(a=>{const tot=a.bull+a.bear+a.neutral;const net=a.bull-a.bear;a.net=net;a.total=tot;a.weight=tot?Math.round(50+50*net/tot):50;});
+  arr.sort((x,y)=>y.net-x.net||y.total-x.total);
+  return arr;
+}
+function overviewOf(items){return{bull:items.filter(i=>i.sentiment==="bull").length,bear:items.filter(i=>i.sentiment==="bear").length,neutral:items.filter(i=>i.sentiment==="neutral").length,total:items.length};}
+
+function sentimentPill(s){const m={bull:["利好","bull"],bear:["利空","bear"],neutral:["中性","neu"]};const[v,c]=m[s]||m.neutral;return `<span class="pill ${c}">${v}</span>`;}
+function weightColor(w){return w>60?"var(--bull)":w<40?"var(--bear)":"var(--neu)";}
+
+function renderStocks(stocks){
+  const el=document.getElementById("stocks");
+  if(!stocks.length){el.innerHTML='<div class="empty">暂无个股</div>';return;}
+  el.innerHTML=stocks.slice(0,60).map(s=>{
+    const w=s.weight;const left=Math.min(Math.max(w,2),98);
+    const netC=w>50?"var(--bull)":w<50?"var(--bear)":"var(--neu)";
+    return `<div class="stock"><div class="top"><div><span class="nm">${s.name||s.code}</span><span class="cd">${s.code}</span></div><div class="net" style="color:${netC}">净${s.net>0?"+":""}${s.net}</div></div>
+    <div class="bar"><div class="mid"></div><div class="fill" style="width:${left}%;background:${weightColor(w)}"></div></div>
+    <div class="note" style="margin-top:4px">权重 ${w} · 利好 ${s.bull} / 利空 ${s.bear} / 中性 ${s.neutral}</div></div>`;
+  }).join("");
+  document.getElementById("stkTag").textContent=stocks.length+" 只";
+}
+function renderItems(items){
+  const el=document.getElementById("items");
+  if(!items.length){el.innerHTML='<div class="empty">暂无公告</div>';return;}
+  el.innerHTML=items.slice(0,120).map(it=>{
+    const sc=it.stocks.map(s=>`${s.name||s.code}(${s.code})`).join("、");
+    return `<div class="item ${it.sentiment}"><div class="h">${sentimentPill(it.sentiment)}<span class="note">${it.date||""}</span></div><div class="ti">${it.title}</div><div class="sc">涉及：${sc}</div></div>`;
+  }).join("");
+  document.getElementById("itTag").textContent=items.length+" 条";
+}
+function renderOverview(ov,src){
+  document.getElementById("ovBull").textContent=ov.bull;
+  document.getElementById("ovBear").textContent=ov.bear;
+  document.getElementById("ovNeu").textContent=ov.neutral;
+  document.getElementById("ovSrc").textContent=src||"";
+}
+function renderMeta(d,live){
+  const t=d.updated||"";const st={ok:"正常",empty:"当日暂无财报公告",error:"抓取失败"}[d.status]||d.status;
+  document.getElementById("meta").textContent=`生成于 ${t} · 状态 ${st}${live?" · 实时":""} · 来源 东方财富`;
+}
+
+function showData(d,live){
+  renderMeta(d,live);
+  const ov=d.overview||overviewOf(d.items||[]);
+  renderOverview(ov,live?"手机实时直连":"服务器快照 latest.json");
+  renderStocks(d.stocks||aggregate(d.items||[]));
+  renderItems(d.items||[]);
+}
+
+async function loadSnapshot(){
+  try{
+    const r=await fetch("latest.json?_="+Date.now());
+    if(!r.ok)throw 0;
+    const d=await r.json();
+    if(d&&d.items)showData(d,false);
+  }catch(e){/* ignore, try live */}
+  loadHistory();
+}
+async function loadHistory(){
+  try{
+    const r=await fetch("snapshots/index.json?_="+Date.now());
+    if(!r.ok)throw 0;
+    const idx=await r.json();
+    const el=document.getElementById("hist");
+    if(!idx||!idx.length){el.innerHTML='<div class="empty">无历史</div>';return;}
+    const rows=idx.slice(0,14).map(h=>{
+      const o=h.overview||{bull:0,bear:0,neutral:0};
+      const d=(h.time||"").slice(0,10);
+      return `<tr><td>${d}</td><td class="bull">${o.bull}</td><td class="bear">${o.bear}</td><td class="neu">${o.neutral}</td></tr>`;
+    }).join("");
+    el.innerHTML=`<table class="hist"><tr><th>日期</th><th class="bull">利好</th><th class="bear">利空</th><th class="neu">中性</th></tr>${rows}</table>`;
+  }catch(e){document.getElementById("hist").innerHTML='<div class="empty">无历史</div>';}
+}
+
+async function liveRefresh(){
+  const btn=document.getElementById("refresh");btn.textContent="⏳ 实时抓取中…";
+  try{
+    const url="https://np-anotice-stock.eastmoney.com/api/security/ann?sr=-1&page_size=200&page_index=1&client_source=web";
+    const r=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://data.eastmoney.com/notices/"}});
+    if(!r.ok)throw 0;
+    const j=await r.json();
+    const list=(j.data&&j.data.list)||[];
+    const today=todayStr();
+    let items=[];
+    list.forEach(it=>{const t=it.title||it.title_ch||"";if(!t||!isFin(t))return;const stocks=extractStocks(it);if(!stocks.length)return;if(itemDate(it)!==today)return;items.push({title:t,stocks,sentiment:classify(t),date:itemDate(it),art_code:it.art_code||""});});
+    if(!items.length){list.forEach(it=>{const t=it.title||it.title_ch||"";if(!t||!isFin(t))return;const stocks=extractStocks(it);if(!stocks.length)return;items.push({title:t,stocks,sentiment:classify(t),date:itemDate(it),art_code:it.art_code||""});});items=items.slice(0,50);}
+    const d={updated:new Date().toISOString().slice(0,19),status:"ok",source:"live",overview:overviewOf(items),stocks:aggregate(items),items};
+    showData(d,true);
+  }catch(e){
+    alert("实时抓取失败（可能浏览器跨域限制）。已显示服务器快照；若快照也空，说明当日暂无财报公告。");
+  }
+  btn.textContent="🔄 实时刷新（手机直连东方财富）";
+}
+
+document.getElementById("refresh").addEventListener("click",liveRefresh);
+loadSnapshot();
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+name: 每日财报舆情抓取
+
+on:
+  schedule:
+    - cron: '30 0 * * *'   # 北京时间 08:30（盘前）
+    - cron: '0 14 * * *'   # 北京时间 22:00（盘后）
+  workflow_dispatch:       # 支持手动触发（首次建库后点一次即可立即启用 Pages）
+
+# 严禁并发：两次运行（手动+定时重叠）排队而非同时 push，避免 main 被 rejected
+concurrency:
+  group: earnings-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 抓取东方财富财报公告并生成快照
+        run: python generate.py
+
+      - name: 提交快照（latest.json + 归档）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: 财报舆情快照 $(date +'%Y-%m-%d %H:%M %Z')" || echo "no changes"
+          git push
+
+      - name: 启用 GitHub Pages（首次自动开启，之后幂等）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST /repos/${{ github.repository }}/pages \
+            -F source='{"branch":"main","path":"/"}' \
+            -F build_type=legacy || true

@@ -1,0 +1,24 @@
+[
+  {
+    "time": "2026-08-17T16:43:00+08:00",
+    "status": "ok",
+    "overview": {
+      "bull": 2,
+      "bear": 1,
+      "neutral": 5,
+      "total": 8
+    },
+    "file": "snapshots/2026-08-17-1643.json"
+  },
+  {
+    "time": "2026-08-17T16:41:15+08:00",
+    "status": "ok",
+    "overview": {
+      "bull": 0,
+      "bear": 0,
+      "neutral": 10,
+      "total": 10
+    },
+    "file": "snapshots/2026-08-17-1641.json"
+  }
+]
