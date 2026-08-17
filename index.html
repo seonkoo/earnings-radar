@@ -221,6 +221,11 @@ nav.bottom button.active{color:var(--accent);}
           <tbody id="tbodyOut"></tbody></table></div>
       </div>
     </div>
+    <div class="card">
+      <h3>🎯 资金定位池（参考） <span class="tag">定位分≥60% 且 3日净占比≥0 · 仅行情/资金流</span></h3>
+      <div id="poolList"><div class="empty">加载中…</div></div>
+      <div class="hint" style="margin-top:10px;">埋伏=承受震荡磨盘。池内板块回调不破位时小仓分批埋伏，并写死止损/持有条件（见「我的」页）。</div>
+    </div>
   </section>
 
   <section class="tab" id="tab-news">
@@ -428,9 +433,9 @@ function renderMoney(){
   $('rotCard').innerHTML=rot;
 }
 function renderPool(){
+  var el=$('poolList');if(!el)return;
   var all=state.industry.concat(state.concept);
   var pool=all.map(function(r){return {r:r,a:analyze(r,state.hist[r.f12],idx300f3())};}).filter(function(x){return x.a.prob>=60&&(x.a.pct3avg||0)>=0;}).sort(function(x,y){return y.a.prob-x.a.prob;}).slice(0,12);
-  var el=$('poolList');
   if(!pool.length){el.innerHTML='<div class="empty">暂无高概率板块。市场轮动混沌期，继续观察：连续2日净流入+低位企稳才进池子。</div>';return;}
   el.innerHTML=pool.map(function(x,i){var rk=i<3?'t'+(i+1):'';return '<div class="pool-item"><span class="rank '+rk+'">'+(i+1)+'</span><div style="flex:1;"><b>'+esc(x.r.f14)+'</b> <span class="'+(x.a.prob>=70?'hi':(x.a.prob>=55?'mid':'low'))+'">'+x.a.prob+'%</span><div class="hint" style="margin-top:3px;">3日'+(x.a.net3!=null?fmtYi(x.a.net3):'—')+' · 连流入'+x.a.daysInflow+'日 · 位置'+(x.a.pos!=null?(x.a.pos*100).toFixed(0)+'%':'—')+'</div></div><div style="text-align:right;"><div class="badge win">'+esc(x.a.win)+'</div></div></div>';}).join('');
 }
