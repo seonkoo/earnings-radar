@@ -78,9 +78,9 @@ def http_get_json(url, referer=EM_REFERER, cb_name=None, timeout=TIMEOUT, retry=
     raise last_err or RuntimeError("未知错误")
 
 
-def clist_url(host, fs, pz, fields):
+def clist_url(host, fs, pz, fields, po=1):
     return ("https://" + host + "/api/qt/clist/get?pn=1&pz=" + str(pz) +
-            "&po=1&np=1&ut=" + UT + "&fltt=2&invt=2&fid=f62&fs=" +
+            "&po=" + str(po) + "&np=1&ut=" + UT + "&fltt=2&invt=2&fid=f62&fs=" +
             urllib.parse.quote(fs, safe="") + "&fields=" + fields)
 
 
@@ -116,11 +116,11 @@ def norm_klines(d):
 
 
 # ============================== 板块资金流引擎 (A) ==============================
-def fetch_boards(fs, pz):
+def fetch_boards(fs, pz, po=1):
     cb = "emcb_" + str(int(time.time() * 1000))
     for host in EM_HOSTS:
         try:
-            url = clist_url(host, fs, pz, "f2,f3,f8,f10,f12,f14,f62,f66,f72,f78,f84,f104,f105,f184") + "&cb=" + cb
+            url = clist_url(host, fs, pz, "f2,f3,f8,f10,f12,f14,f62,f66,f72,f78,f84,f104,f105,f184", po) + "&cb=" + cb
             return norm_diff(http_get_json(url, EM_REFERER, cb))
         except Exception as e:  # noqa: BLE001
             log(f"    · 域名 {host} 板块列表失败: {e}")
@@ -139,13 +139,43 @@ def fetch_indices():
     return []
 
 
-def fetch_stocks():
+def fetch_stocks(po=1):
     fs = ("m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,"
           "m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2")
     cb = "emcb_" + str(int(time.time() * 1000))
     for host in EM_HOSTS:
         try:
-            url = clist_url(host, fs, 12, "f2,f3,f10,f12,f14,f62,f184") + "&cb=" + cb
+            url = clist_url(host, fs, 12, "f2,f3,f10,f12,f14,f62,f184", po) + "&cb=" + cb
+            return norm_diff(http_get_json(url, EM_REFERER, cb))
+        except Exception as e:  # noqa: BLE001
+            log(f"    · 域名 {host} 个股失败: {e}")
+    return []
+
+
+# 净流出专用 host：优先 push2delay（沙箱/海外 python 实测 po=0 升序生效），
+# 规避部分 host（push2）忽略 po 导致净流出抓取为空的问题。
+OUT_HOSTS = ["push2delay.eastmoney.com", "push2.eastmoney.com"]
+OUT_FIELDS = "f2,f3,f10,f12,f14,f62,f184"
+
+
+def fetch_on(hosts, fs, pz, po=1, fields=OUT_FIELDS):
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in hosts:
+        try:
+            url = clist_url(host, fs, pz, fields, po) + "&cb=" + cb
+            return norm_diff(http_get_json(url, EM_REFERER, cb))
+        except Exception as e:  # noqa: BLE001
+            log(f"    · 域名 {host} 失败: {e}")
+    return []
+
+
+def fetch_stocks_on(hosts, po=1, pz=12):
+    fs = ("m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,"
+          "m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2")
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in hosts:
+        try:
+            url = clist_url(host, fs, pz, OUT_FIELDS, po) + "&cb=" + cb
             return norm_diff(http_get_json(url, EM_REFERER, cb))
         except Exception as e:  # noqa: BLE001
             log(f"    · 域名 {host} 个股失败: {e}")
@@ -157,7 +187,7 @@ def fetch_history(secid):
     for host in EM_HIS_HOSTS:
         try:
             url = his_url(host, secid) + "&cb=" + cb
-            kl = norm_klines(http_get_json(url, EM_REFERER, cb))
+            kl = norm_klines(http_get_json(url, EM_REFERER, cb, timeout=8, retry=1))
             if kl and len(kl) >= 2:
                 return kl
             log(f"    · 域名 {host} 历史仅 {len(kl) if kl else 0} 天")
@@ -335,6 +365,19 @@ def main():
     stats["stocks"] = len(stocks)
     log(f"    -> 个股 {stats['stocks']} 条")
 
+    # ④b 净流出板块 / 个股（po=0 升序抓最负值；强制走 OUT_HOSTS 中尊重 po 的 host，
+    #     规避部分 host 忽略 po 导致净流出维度缺失）
+    log("④b 净流出板块 / 个股 ...")
+    io = fetch_on(OUT_HOSTS, "m:90+t:2", 15, 0)
+    co = fetch_on(OUT_HOSTS, "m:90+t:3", 15, 0)
+    combined = io + co
+    combined.sort(key=lambda b: float(b.get("f62") or 0))
+    out = [b for b in combined if float(b.get("f62") or 0) < 0][:15]
+    outStocks = [s for s in fetch_stocks_on(OUT_HOSTS, po=0) if float(s.get("f62") or 0) < 0][:8]
+    stats["out"] = len(out)
+    stats["outStocks"] = len(outStocks)
+    log(f"    -> 净流出板块 {stats['out']} 条，净流出个股 {stats['outStocks']} 条")
+
     hist = {}
     top_boards = [b for b in industry[:HIST_TOP]] + [b for b in concept[:HIST_TOP]]
     log(f"⑤ 历史资金流（{len(top_boards)} 个板块）...")
@@ -368,6 +411,8 @@ def main():
         "concept": concept,
         "stocks": stocks,
         "hist": hist,
+        "out": out,
+        "outStocks": outStocks,
         "earnings": earnings,
     }
 
@@ -425,6 +470,7 @@ if __name__ == "__main__":
             "stats": {"indices": 0, "industry": 0, "concept": 0, "stocks": 0,
                       "hist_ok": 0, "hist_fail": 0},
             "indices": [], "industry": [], "concept": [], "stocks": [], "hist": {},
+            "out": [], "outStocks": [],
             "earnings": {"overview": {"bull": 0, "bear": 0, "neutral": 0, "total": 0},
                          "stocks": [], "items": []},
         }

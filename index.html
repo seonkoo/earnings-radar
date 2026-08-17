@@ -222,6 +222,12 @@ nav.bottom button.active{color:var(--accent);}
       </div>
     </div>
     <div class="card">
+      <h3>💧 个股净流出 TOP8</h3>
+      <div class="twrap" style="max-height:50vh;"><table>
+        <thead><tr><th>#</th><th>代码</th><th>名称</th><th>涨跌</th><th>净流入</th><th>净占</th></tr></thead>
+        <tbody id="tbodyOutStocks"></tbody></table></div>
+    </div>
+    <div class="card">
       <h3>🎯 资金定位池（参考） <span class="tag">定位分≥60% 且 3日净占比≥0 · 仅行情/资金流</span></h3>
       <div id="poolList"><div class="empty">加载中…</div></div>
       <div class="hint" style="margin-top:10px;">埋伏=承受震荡磨盘。池内板块回调不破位时小仓分批埋伏，并写死止损/持有条件（见「我的」页）。</div>
@@ -347,15 +353,15 @@ async function mapLimit(items,limit,fn){var idx=0,out=new Array(items.length);as
 
 var EM_HOSTS=['push2delay.eastmoney.com','push2.eastmoney.com'];
 var EM_HIS_HOSTS=['push2delay.eastmoney.com','push2his.eastmoney.com'];
-function clistUrl(h,fs,pz,f){return 'https://'+h+'/api/qt/clist/get?pn=1&pz='+pz+'&po=1&np=1&ut='+UT+'&fltt=2&invt=2&fid=f62&fs='+encodeURIComponent(fs)+'&fields='+f;}
+function clistUrl(h,fs,pz,f,po){return 'https://'+h+'/api/qt/clist/get?pn=1&pz='+pz+'&po='+(po||1)+'&np=1&ut='+UT+'&fltt=2&invt=2&fid=f62&fs='+encodeURIComponent(fs)+'&fields='+f;}
 function ulistUrl(h,secids,f){return 'https://'+h+'/api/qt/ulist.np/get?fltt=2&invt=2&fields='+f+'&secids='+secids+'&ut='+UT;}
 function hisUrl(h,secid){return 'https://'+h+'/api/qt/stock/fflow/daykline/get?lmt=30&klt=101&secid='+secid+'&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63&ut='+UT;}
 function normDiff(d){return (d&&d.data&&d.data.diff)?(Array.isArray(d.data.diff)?d.data.diff:Object.values(d.data.diff)):[];}
 function normKlines(d){return (d&&d.data&&d.data.klines)?d.data.klines:null;}
-async function fetchBoards(fs,pz){var urls=EM_HOSTS.map(function(h){return clistUrl(h,fs,pz||30,'f2,f3,f8,f10,f12,f14,f62,f66,f72,f78,f84,f104,f105,f184');});return normDiff(await fetchAny(urls));}
+async function fetchBoards(fs,pz,po){var urls=EM_HOSTS.map(function(h){return clistUrl(h,fs,pz||30,'f2,f3,f8,f10,f12,f14,f62,f66,f72,f78,f84,f104,f105,f184',po);});return normDiff(await fetchAny(urls));}
 async function fetchHistory(secid){var urls=EM_HIS_HOSTS.map(function(h){return hisUrl(h,secid);});return normKlines(await fetchAny(urls));}
 async function fetchIndices(){var urls=EM_HOSTS.map(function(h){return ulistUrl(h,'1.000001,0.399001,0.399006,1.000300,1.000905,1.000688','f2,f3,f6,f12,f14');});return normDiff(await fetchAny(urls));}
-async function fetchStocks(){var fs='m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2';var urls=EM_HOSTS.map(function(h){return clistUrl(h,fs,12,'f2,f3,f10,f12,f14,f62,f184');});return normDiff(await fetchAny(urls));}
+async function fetchStocks(po){var fs='m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2';var urls=EM_HOSTS.map(function(h){return clistUrl(h,fs,12,'f2,f3,f10,f12,f14,f62,f184',po);});return normDiff(await fetchAny(urls));}
 async function fetchHoldingQuotes(){if(!state.holdings.length)return;var secids=state.holdings.map(function(h){return secidOf(h.code);}).join(',');var urls=EM_HOSTS.map(function(h){return ulistUrl(h,secids,'f2,f3,f10,f12,f14,f62,f184');});var arr=normDiff(await fetchAny(urls)),map={};arr.forEach(function(q){if(q.f12)map[String(q.f12)]=q;});state.holdings.forEach(function(h){h.quote=map[String(h.code)]||null;});}
 
 function analyze(row,hist,idx300f3){
@@ -388,7 +394,13 @@ function analyze(row,hist,idx300f3){
   if(pos!=null&&pos>0.85)prob-=15;
   prob=clamp(Math.round(prob),2,95);
   var win='—';
-  if((pct3avg||0)<-1)win='资金流出·观望';
+  if(histDays===0){
+    // 无历史（东财历史接口在海外服务器受限）：按当日主力净流入给方向，不误导为潜伏信号
+    if(todayNet>0)win='资金流入·偏暖';
+    else if(todayNet<0)win='资金流出·承压';
+    else win='方向未明';
+  }
+  else if((pct3avg||0)<-1)win='资金流出·观望';
   else if(pos!=null&&pos>0.85)win='高位·追高风险大';
   else if(daysInflow>=3&&(pct3avg||0)>=1&&pos!=null&&pos<=0.5)win='⭐1~3日启动窗口';
   else if(daysInflow>=2&&(pct3avg||0)>0&&pos!=null&&pos<=0.6)win='1~5日窗口';
@@ -404,7 +416,7 @@ function renderIndices(){var el=$('idxChips');el.innerHTML='';var names={'000001
   state.indices.forEach(function(x){var nm=names[String(x.f12)]||String(x.f12),f3=num(x.f3);el.innerHTML+='<span class="chip"><b>'+nm+'</b> <i class="'+cls3(f3)+'">'+x.f2+' '+fmtNum(f3)+'%</i></span>';});
   if(turnover()>0)el.innerHTML+='<span class="chip">两市 <b>'+(turnover()/1e8).toFixed(0)+'亿</b></span>';
   if(!state.indices.length)el.innerHTML='<span class="chip">⚠️ 指数加载失败</span>';}
-function probCell(a){if(a==null)return '<span class="low">—</span>';var pc=a.prob>=70?'hi':(a.prob>=55?'mid':'low');return '<div class="prob"><div class="bar"><i style="width:'+a.prob+'%"></i></div><span class="'+pc+'">'+a.prob+'%</span></div>';}
+function probCell(a){if(a==null||a.histDays===0)return '<span class="low">—</span>';var pc=a.prob>=70?'hi':(a.prob>=55?'mid':'low');return '<div class="prob"><div class="bar"><i style="width:'+a.prob+'%"></i></div><span class="'+pc+'">'+a.prob+'%</span></div>';}
 function numCell(v,fmt){if(v==null||isNaN(v))return '<span class="dim" style="color:var(--dim)">—</span>';var s=fmt?fmt(v):fmtYi(v);var c=v>0?'up':(v<0?'down':'flat');return '<span class="'+c+'">'+s+'</span>';}
 function posCell(p){if(p==null)return '<span style="color:var(--dim)">—</span>';var s=(p*100).toFixed(0)+'%';var c=p<=0.6?'down':(p>0.85?'up':'flat');return '<span class="'+c+'">'+s+'</span>';}
 function boardRows(list,isConcept){var h='';list.forEach(function(r,i){var a=analyze(r,state.hist[r.f12],idx300f3());
@@ -413,13 +425,17 @@ function renderBoards(){$('tbodyIndustry').innerHTML=boardRows(state.industry,fa
 function renderMoney(){
   var s='';state.stocks.forEach(function(r,i){s+='<tr><td>'+(i+1)+'</td><td>'+esc(r.f12)+'</td><td><b>'+esc(r.f14)+'</b></td><td class="'+cls3(num(r.f3))+'">'+fmtNum(r.f3)+'%</td><td>'+numCell(num(r.f62))+'</td><td>'+numCell(num(r.f184),function(v){return fmtNum(v)+'%';})+'</td></tr>';});
   $('tbodyStocks').innerHTML=s||'<tr><td colspan="6" class="empty">无数据</td></tr>';
-  var allInd=state.industry.map(function(r){return {r:r,a:analyze(r,state.hist[r.f12],idx300f3())};});
-  var outList=allInd.filter(function(x){return x.a.net3!=null&&x.a.net3<0;}).sort(function(x,y){return x.a.net3-y.a.net3;});
-  var outMode='3日';
-  if(!outList.length){outList=allInd.filter(function(x){return x.a.todayNet<0;}).sort(function(x,y){return x.a.todayNet-y.a.todayNet;});outMode='今日';}
-  outList=outList.slice(0,8);
-  var o='';outList.forEach(function(x,i){o+='<tr><td>'+(i+1)+'</td><td><b>'+esc(x.r.f14)+'</b></td><td class="'+cls3(x.a.f3)+'">'+fmtNum(x.a.f3)+'%</td><td>'+numCell(x.a.todayNet)+'</td><td>'+(outMode==='3日'?numCell(x.a.net3):'<span style="color:var(--dim)">—</span>')+'</td><td>'+probCell(x.a)+'</td></tr>';});
-  $('tbodyOut').innerHTML=o||'<tr><td colspan="6" class="empty">'+(allInd.length?'当前无净流出板块':'数据不足')+'</td></tr>';
+  // 服务端 state.out 是原始板块行（{f12,f14,f62,…}），需统一包成 {r,a} 供下方渲染与 rotCard 使用
+  var outList=(state.out&&state.out.length)?state.out.slice(0,8).map(function(r){return {r:r,a:analyze(r,state.hist[r.f12],idx300f3())};}):[];
+  var outMode='当日';
+  if(!outList.length){
+    var allInd=state.industry.concat(state.concept).map(function(r){return {r:r,a:analyze(r,state.hist[r.f12],idx300f3())};});
+    outList=allInd.filter(function(x){return x.a.todayNet<0;}).sort(function(x,y){return x.a.todayNet-y.a.todayNet;}).slice(0,8);
+  }
+  var o='';outList.forEach(function(x,i){o+='<tr><td>'+(i+1)+'</td><td><b>'+esc(x.r.f14)+'</b></td><td class="'+cls3(x.a.f3)+'">'+fmtNum(x.a.f3)+'%</td><td>'+numCell(x.a.todayNet)+'</td><td><span style="color:var(--dim)">—</span></td><td>'+probCell(x.a)+'</td></tr>';});
+  $('tbodyOut').innerHTML=o||'<tr><td colspan="6" class="empty">当前无净流出板块</td></tr>';
+  var os='';if(state.outStocks&&state.outStocks.length){state.outStocks.slice(0,8).forEach(function(r,i){os+='<tr><td>'+(i+1)+'</td><td>'+esc(r.f12)+'</td><td><b>'+esc(r.f14)+'</b></td><td class="'+cls3(num(r.f3))+'">'+fmtNum(num(r.f3))+'%</td><td>'+numCell(num(r.f62))+'</td><td>'+numCell(num(r.f184),function(v){return fmtNum(v)+'%';})+'</td></tr>';});}
+  $('tbodyOutStocks').innerHTML=os||'<tr><td colspan="6" class="empty">当前无净流出个股</td></tr>';
   var rot='⚠️ 数据不足，暂无法判断轮动。';
   if(state.industry.length&&state.concept.length){
     var out=outList[0],out2=outList[1];
@@ -435,6 +451,13 @@ function renderMoney(){
 function renderPool(){
   var el=$('poolList');if(!el)return;
   var all=state.industry.concat(state.concept);
+  if(state.histEmpty){
+    // 历史资金流不可用：退化展示当日主力净流入榜（非潜伏信号，明确标注）
+    var today=all.map(function(r){return {r:r,a:analyze(r,state.hist[r.f12],idx300f3())};}).filter(function(x){return x.a.todayNet>0;}).sort(function(x,y){return y.a.todayNet-x.a.todayNet;}).slice(0,12);
+    if(!today.length){el.innerHTML='<div class="empty">暂无净流入板块。</div>';return;}
+    el.innerHTML='<div class="hint" style="margin-bottom:8px;">⚠️ 历史资金流（东财）在海外服务器暂不可用，以下为<b>当日主力净流入榜</b>（非潜伏/埋伏信号）。历史恢复后自动切回精确概率池。</div>'+today.map(function(x,i){var rk=i<3?'t'+(i+1):'';return '<div class="pool-item"><span class="rank '+rk+'">'+(i+1)+'</span><div style="flex:1;"><b>'+esc(x.r.f14)+'</b><div class="hint" style="margin-top:3px;">当日净流入 '+fmtYi(x.a.todayNet)+'</div></div><div style="text-align:right;"><div class="badge win">'+esc(x.a.win)+'</div></div></div>';}).join('');
+    return;
+  }
   var pool=all.map(function(r){return {r:r,a:analyze(r,state.hist[r.f12],idx300f3())};}).filter(function(x){return x.a.prob>=60&&(x.a.pct3avg||0)>=0;}).sort(function(x,y){return y.a.prob-x.a.prob;}).slice(0,12);
   if(!pool.length){el.innerHTML='<div class="empty">暂无高概率板块。市场轮动混沌期，继续观察：连续2日净流入+低位企稳才进池子。</div>';return;}
   el.innerHTML=pool.map(function(x,i){var rk=i<3?'t'+(i+1):'';return '<div class="pool-item"><span class="rank '+rk+'">'+(i+1)+'</span><div style="flex:1;"><b>'+esc(x.r.f14)+'</b> <span class="'+(x.a.prob>=70?'hi':(x.a.prob>=55?'mid':'low'))+'">'+x.a.prob+'%</span><div class="hint" style="margin-top:3px;">3日'+(x.a.net3!=null?fmtYi(x.a.net3):'—')+' · 连流入'+x.a.daysInflow+'日 · 位置'+(x.a.pos!=null?(x.a.pos*100).toFixed(0)+'%':'—')+'</div></div><div style="text-align:right;"><div class="badge win">'+esc(x.a.win)+'</div></div></div>';}).join('');
@@ -550,11 +573,23 @@ async function earnLive(){var btn=document.getElementById('btnEarnLive');if(btn)
 async function loadAll(){
   if(state.loading)return;state.loading=true;setStatus('正在拉取…');
   try{
+    // 服务器快照（权威净流出字段 + 兜底）：与实时并行拉取
+    var snapP=fetch('./latest.json',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});
     var batch=await Promise.allSettled([fetchIndices(),fetchBoards('m:90+t:2',30),fetchBoards('m:90+t:3',30),fetchStocks()]);
+    var snap=await snapP;
+    if(snap){state.out=snap.out||[];state.outStocks=snap.outStocks||[];}
     if(batch[0].status==='fulfilled')state.indices=batch[0].value;
     if(batch[1].status==='fulfilled')state.industry=batch[1].value;
     if(batch[2].status==='fulfilled')state.concept=batch[2].value;
     if(batch[3].status==='fulfilled')state.stocks=batch[3].value;
+    // 实时净流出（po=0 升序）：成功且非空则覆盖快照值；否则保留权威快照，避免依赖各浏览器/网络对 po 的支持
+    try{
+      var ioR=await fetchBoards('m:90+t:2',15,0),coR=await fetchBoards('m:90+t:3',15,0),stR=await fetchStocks(0);
+      var realOut=ioR.concat(coR).sort(function(a,b){return (parseFloat(a.f62)||0)-(parseFloat(b.f62)||0);}).filter(function(b){return (parseFloat(b.f62)||0)<0;}).slice(0,15);
+      var realOutStocks=stR.filter(function(s){return (parseFloat(s.f62)||0)<0;}).slice(0,8);
+      if(realOut.length)state.out=realOut;
+      if(realOutStocks.length)state.outStocks=realOutStocks;
+    }catch(e){/* 保留快照净流出 */}
     var haveData=(state.indices.length&&(state.industry.length||state.concept.length));
     if(haveData){
       var top=state.industry.slice(0,10).concat(state.concept.slice(0,10));
@@ -569,7 +604,7 @@ async function loadAll(){
     try{
       var r=await fetch('./latest.json',{cache:'no-store'});var d=await r.json();
       if(d&&(d.industry&&d.industry.length||d.concept&&d.concept.length)){
-        state.indices=d.indices||[];state.industry=d.industry||[];state.concept=d.concept||[];state.stocks=d.stocks||[];state.hist=d.hist||{};
+        state.indices=d.indices||[];state.industry=d.industry||[];state.concept=d.concept||[];state.stocks=d.stocks||[];state.hist=d.hist||{};state.out=d.out||[];state.outStocks=d.outStocks||[];
         state.usingSnapshot=true;state.loadedAt=new Date(d.updated||Date.now());renderAll();
         setStatus('服务器快照 '+String(d.updated||'').slice(11,16));
         toast('实时接口失败，已加载服务器快照');
@@ -579,7 +614,8 @@ async function loadAll(){
     setStatus('数据加载失败');toast('实时与快照均失败，检查网络');
   }finally{state.loading=false;}
 }
-function renderAll(){renderIndices();renderBoards();renderMoney();renderPool();renderHoldings();renderCheck();renderSnapInfo();renderEarnings();
+function renderAll(){state.histEmpty=!(state.hist&&Object.keys(state.hist).length);
+  renderIndices();renderBoards();renderMoney();renderPool();renderHoldings();renderCheck();renderSnapInfo();renderEarnings();
   if(!state.lastReportText)$('reportBox').textContent='点「📮 早报/晚报」生成；或直接看上方板块数据。';}
 function renderSnapInfo(){var el=$('snapInfo');if(!state.snapIndex||!state.snapIndex.length){el.innerHTML='（暂无快照记录）';return;}
   var head=state.snapIndex.slice(0,3).map(function(r){return '• '+String(r.time).slice(0,16)+' ['+r.status+'] 指数'+r.stats.indices+'/行业'+r.stats.industry+'/概念'+r.stats.concept;}).join('<br>');
