@@ -3,7 +3,8 @@
 """
 brief.py — 每日要闻简报生成器（服务端，GitHub Actions 运行）
 抓取最新财经新闻 → 词库匹配筛选 → 按"进攻/平缓/避险"分组 → 输出 brief.json
-数据源：新浪财经 7x24 滚动（主）+ 东方财富快讯（备）
+数据源（多源广度，按可用情况叠加）：
+  新浪财经 7x24 滚动（主） + 同花顺快讯（主） + 财联社电报（主） + 东方财富快讯（备）
 无第三方依赖（仅标准库 urllib / json / re / datetime）。
 """
 import json, os, re, urllib.request, urllib.error, datetime
@@ -13,12 +14,17 @@ BJ = datetime.timezone(datetime.timedelta(hours=8))
 TODAY = datetime.datetime.now(BJ)
 
 SINA_URL = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&num=60&page=1"
+THS_URL  = "https://news.10jqka.com.cn/tapp/news/push/stock/?num=30"
+CLS_URL  = "https://www.cls.cn/api/cache?name=refreshTenTelegraph&lastTime=%d"
 EM_URL   = "https://newsapi.eastmoney.com/api/idx/get?type=1&page=1&page_size=60&callback=emcb"
-UA = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"}
+UA_SINA = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"}
+UA_THS   = {"User-Agent": "Mozilla/5.0", "Referer": "https://news.10jqka.com.cn/"}
+UA_CLS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://www.cls.cn/telegraph"}
+UA_EM    = {"User-Agent": "Mozilla/5.0", "Referer": "https://newsapi.eastmoney.com/"}
 
 
-def http_get(url, timeout=15):
-    req = urllib.request.Request(url, headers=UA)
+def http_get(url, timeout=15, headers=None):
+    req = urllib.request.Request(url, headers=headers or UA_SINA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "ignore")
 
@@ -81,6 +87,68 @@ def parse_em(raw):
             out.append({'title': title, 'brief': brief[:120], 'text': text,
                         'src': '东方财富', 'time': str(d.get('datetime') or d.get('date') or '')})
     return out
+
+
+def parse_ths(raw):
+    """同花顺快讯：{code,msg,time,data:{list:[{title,digest,...}]}}"""
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return []
+    data = (obj.get('data') or {}).get('list') or []
+    out = []
+    for d in data:
+        if not isinstance(d, dict):
+            continue
+        title = str(d.get('title') or '')
+        digest = str(d.get('digest') or '')
+        text = (title + ' ' + digest).strip()
+        if text:
+            out.append({'title': title, 'brief': digest[:120], 'text': text,
+                        'src': '同花顺', 'time': str(d.get('date') or d.get('time') or '')})
+    return out
+
+
+def parse_cls(raw):
+    """财联社电报：服务端缓存代理 /api/cache?name=refreshTenTelegraph → {errno,data:{l:{id:{...}}}}"""
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return []
+    data = obj.get('data') or {}
+    l = data.get('l') or {}
+    if not isinstance(l, dict):
+        l = {}
+    out = []
+    for it in l.values():
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get('title') or '')
+        content = str(it.get('content') or it.get('brief') or '')
+        brief = str(it.get('brief') or content)
+        text = ((title + ' ' + content).strip()) if title else content.strip()
+        if not text:
+            continue
+        ctime = it.get('ctime') or it.get('time') or 0
+        out.append({'title': (title or brief[:40]), 'brief': brief[:120], 'text': text,
+                    'src': '财联社', 'time': fmt_ts(ctime)})
+    return out
+
+
+def dedup_items(items):
+    """跨源去重：标题完全相同，或一条标题包含另一条标题(>=12字) 视为同一事件，保留先到源。"""
+    keep = []
+    for it in items:
+        t = it['title'].strip()
+        dup = False
+        for k in keep:
+            kt = k['title'].strip()
+            if t and kt and (t == kt or (len(t) >= 12 and t in kt) or (len(kt) >= 12 and kt in t)):
+                dup = True
+                break
+        if not dup:
+            keep.append(it)
+    return keep
 
 
 def call_llm(system, user, api_key, base_url, model, timeout=50):
@@ -234,17 +302,39 @@ def main():
 
     items = []
     src_stat = []
-    # 主源：新浪财经 7x24
+    # 主源 1：新浪财经 7x24
     try:
-        raw = http_get(SINA_URL)
-        items = parse_sina(raw)
-        src_stat.append('新浪财经 %d 条' % len(items))
+        raw = http_get(SINA_URL, headers=UA_SINA)
+        sina = parse_sina(raw)
+        items = items + sina
+        src_stat.append('新浪财经 %d 条' % len(sina))
     except Exception as e:
         src_stat.append('新浪财经 失败: %s' % e)
-    # 备源：东方财富（新浪不足时补）
-    if len(items) < 20:
+    # 主源 2：同花顺快讯
+    try:
+        raw = http_get(THS_URL, headers=UA_THS)
+        ths = parse_ths(raw)
+        items = items + ths
+        src_stat.append('同花顺 %d 条' % len(ths))
+    except Exception as e:
+        src_stat.append('同花顺 失败: %s' % e)
+    # 主源 3：财联社电报（服务端缓存代理，无需签名）
+    try:
+        import time as _time
+        raw = http_get(CLS_URL % int(_time.time()), headers=UA_CLS)
+        cls = parse_cls(raw)
+        items = items + cls
+        src_stat.append('财联社 %d 条' % len(cls))
+    except Exception as e:
+        src_stat.append('财联社 失败: %s' % e)
+    # 跨源去重（避免同一事件被多源重复加权）
+    before = len(items)
+    items = dedup_items(items)
+    src_stat.append('去重 %d→%d' % (before, len(items)))
+    # 备源：东方财富（主源偏少时补）
+    if len(items) < 30:
         try:
-            raw = http_get(EM_URL)
+            raw = http_get(EM_URL, headers=UA_EM)
             em = parse_em(raw)
             items = items + em
             src_stat.append('东方财富 %d 条' % len(em))
