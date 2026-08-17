@@ -39,6 +39,12 @@ HIST_TOP = 10                 # 行业/概念各取前 N 个拉历史
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CST = timezone(timedelta(hours=8))   # 北京时间
 
+# 东方财富概念板块里混入的"选股/统计"型板块（非真实行业/概念），应从板块净流出等核心视图剔除
+JUNK_BOARD_RE = re.compile(r'^(昨日|最近)|首板$|连板$|多板$|高换手$|触板$|涨跌停$|破净股$|次新股$')
+
+def filter_junk_boards(boards):
+    return [b for b in boards if not JUNK_BOARD_RE.search(b.get("f14", ""))]
+
 
 def log(msg):
     ts = datetime.now(CST).strftime("%H:%M:%S")
@@ -356,7 +362,7 @@ def main():
     log(f"    -> 行业 {stats['industry']} 条")
 
     log("③ 概念板块 (fs=m:90+t:3) ...")
-    concept = fetch_boards("m:90+t:3", 30)
+    concept = filter_junk_boards(fetch_boards("m:90+t:3", 30))
     stats["concept"] = len(concept)
     log(f"    -> 概念 {stats['concept']} 条")
 
@@ -369,7 +375,7 @@ def main():
     #     规避部分 host 忽略 po 导致净流出维度缺失）
     log("④b 净流出板块 / 个股 ...")
     io = fetch_on(OUT_HOSTS, "m:90+t:2", 15, 0)
-    co = fetch_on(OUT_HOSTS, "m:90+t:3", 15, 0)
+    co = filter_junk_boards(fetch_on(OUT_HOSTS, "m:90+t:3", 15, 0))
     combined = io + co
     combined.sort(key=lambda b: float(b.get("f62") or 0))
     out = [b for b in combined if float(b.get("f62") or 0) < 0][:15]
