@@ -1,0 +1,21 @@
+[
+  {
+    "time": "2026-08-17T17:36:27+08:00",
+    "status": "ok",
+    "stats": {
+      "indices": 6,
+      "industry": 30,
+      "concept": 30,
+      "stocks": 12,
+      "hist_ok": 3,
+      "hist_fail": 17
+    },
+    "earnings": {
+      "bull": 0,
+      "bear": 0,
+      "neutral": 4,
+      "total": 4
+    },
+    "file": "snapshots/2026-08-17-1736.json"
+  }
+]
