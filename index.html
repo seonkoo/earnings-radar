@@ -229,6 +229,10 @@ nav.bottom button.active{color:var(--accent);}
         <tbody id="tbodyOutStocks"></tbody></table></div>
     </div>
     <div class="card">
+      <h3>📊 ETF 主力资金流向 <span class="tag">净流入/流出 TOP · 22:00 自动更新</span></h3>
+      <div id="etfCard"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="card">
       <h3>🎯 资金定位池（参考） <span class="tag">定位分≥60% 且 3日净占比≥0 · 仅行情/资金流</span></h3>
       <div id="poolList"><div class="empty">加载中…</div></div>
       <div class="hint" style="margin-top:10px;">埋伏=承受震荡磨盘。池内板块回调不破位时小仓分批埋伏，并写死止损/持有条件（见「我的」页）。</div>
@@ -321,7 +325,7 @@ var UT='b2884a393a59ad64002292a3e90d46a5';
 var state={ industry:[], concept:[], stocks:[], indices:[], hist:{}, loadedAt:null, loading:false,
   reports:lsGet('mr_reports',[]), holdings:lsGet('mr_holdings',[]), checkData:lsGet('mr_check',{}),
   notifOn:lsGet('mr_notif','0')==='1', pushedKey:lsGet('mr_pushed_key',''), lastReportText:'',
-  snapIndex:null, usingSnapshot:false, lexicon:null, news:null, earnings:null };
+  snapIndex:null, usingSnapshot:false, lexicon:null, news:null, earnings:null, etf:null };
 
 function lsGet(k,fb){try{var v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch(e){return fb;}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
@@ -449,6 +453,45 @@ function renderMoney(){
     else rot='无净流出也无高概率吸筹，市场混沌期，多看少动。';
   }
   $('rotCard').innerHTML=rot;
+  renderEtf();
+}
+function renderEtf(){
+  var el=$('etfCard');if(!el)return;
+  var etf=state.etf;
+  if(!etf){el.innerHTML='<div class="empty">等待服务器数据…</div>';return;}
+  if(!etf.available){el.innerHTML='<div class="hint">⏳ 盘前 / 数据未回填（ETF 主力净流入暂无），当日 22:00 自动更新昨日数据。</div>';return;}
+  var h='',groups=etf.byGroup||{},gkeys=Object.keys(groups);
+  if(gkeys.length){
+    var max=Math.max.apply(null,gkeys.map(function(g){return Math.abs(groups[g]);}))||1;
+    h+='<div style="margin-bottom:12px;">';
+    gkeys.forEach(function(g){
+      var v=groups[g],up=v>=0,w=Math.max(2,Math.round(Math.abs(v)/max*100));
+      h+='<div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px;">'
+        +'<span style="width:70px;flex:none;color:var(--dim);">'+esc(g)+'</span>'
+        +'<div style="flex:1;background:var(--bg2,#222);border-radius:4px;height:14px;position:relative;">'
+        +(up?'<div style="width:'+w+'%;height:100%;border-radius:4px;background:#22c55e;opacity:.85;"></div>'
+            :'<div style="width:'+w+'%;height:100%;border-radius:4px;background:#ef4444;opacity:.85;margin-left:'+(100-w)+'%;"></div>')
+        +'</div><b class="'+(up?'up':'down')+'" style="width:96px;flex:none;text-align:right;">'+fmtYi(v)+'</b></div>';
+    });
+    h+='</div>';
+  }
+  function rows(list,cls){
+    if(!list||!list.length)return '<tr><td colspan="5" class="empty">暂无</td></tr>';
+    var s='';list.slice(0,8).forEach(function(r,i){
+      s+='<tr><td>'+(i+1)+'</td><td>'+esc(r.code)+'</td><td><b>'+esc(r.name)+'</b></td>'
+        +'<td class="'+cls3(num(r.pct))+'">'+fmtNum(num(r.pct))+'%</td><td class="'+cls+'">'+fmtYi(num(r.f62))+'</td></tr>';
+    });return s;
+  }
+  h+='<div class="grid2">'
+    +'<div><div style="font-size:12px;color:var(--dim);margin-bottom:4px;">🔥 净流入 TOP8</div>'
+    +'<div class="twrap" style="max-height:44vh;"><table><thead><tr><th>#</th><th>代码</th><th>名称</th><th>涨跌</th><th>净流入</th></tr></thead><tbody>'
+    +rows(etf.topIn,'up')+'</tbody></table></div></div>'
+    +'<div><div style="font-size:12px;color:var(--dim);margin-bottom:4px;">💧 净流出 TOP8</div>'
+    +'<div class="twrap" style="max-height:44vh;"><table><thead><tr><th>#</th><th>代码</th><th>名称</th><th>涨跌</th><th>净流出</th></tr></thead><tbody>'
+    +rows(etf.topOut,'down')+'</tbody></table></div></div></div>';
+  var gnames=Object.keys(etf.groups||{}).join('/');
+  h+='<div class="hint" style="margin-top:8px;">⚠️ '+esc(etf.caveat||'')+'；覆盖 '+etf.total+' 只（'+esc(gnames)+'）。</div>';
+  el.innerHTML=h;
 }
 function renderPool(){
   var el=$('poolList');if(!el)return;
@@ -579,7 +622,7 @@ async function loadAll(){
     var snapP=fetch('./latest.json',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});
     var batch=await Promise.allSettled([fetchIndices(),fetchBoards('m:90+t:2',30),fetchBoards('m:90+t:3',30),fetchStocks()]);
     var snap=await snapP;
-    if(snap){state.out=snap.out||[];state.outStocks=snap.outStocks||[];}
+    if(snap){state.out=snap.out||[];state.outStocks=snap.outStocks||[];state.etf=snap.etf||null;}
     if(batch[0].status==='fulfilled')state.indices=batch[0].value;
     if(batch[1].status==='fulfilled')state.industry=batch[1].value;
     if(batch[2].status==='fulfilled')state.concept=batch[2].value;
@@ -606,7 +649,7 @@ async function loadAll(){
     try{
       var r=await fetch('./latest.json',{cache:'no-store'});var d=await r.json();
       if(d&&(d.industry&&d.industry.length||d.concept&&d.concept.length)){
-        state.indices=d.indices||[];state.industry=d.industry||[];state.concept=d.concept||[];state.stocks=d.stocks||[];state.hist=d.hist||{};state.out=d.out||[];state.outStocks=d.outStocks||[];
+        state.indices=d.indices||[];state.industry=d.industry||[];state.concept=d.concept||[];state.stocks=d.stocks||[];state.hist=d.hist||{};state.out=d.out||[];state.outStocks=d.outStocks||[];state.etf=d.etf||null;
         state.usingSnapshot=true;state.loadedAt=new Date(d.updated||Date.now());renderAll();
         setStatus('服务器快照 '+String(d.updated||'').slice(11,16));
         toast('实时接口失败，已加载服务器快照');
