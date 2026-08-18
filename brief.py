@@ -177,7 +177,7 @@ def call_llm(system, user, api_key, base_url, model, timeout=50):
         return None, str(e)
 
 
-def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model):
+def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_flow=None):
     """用 LLM 把 top 新闻压缩成综述 + 逐条要点；只基于给定新闻，不预测不荐股。"""
     if not top:
         return {'used': False, 'error': 'empty items'}
@@ -194,6 +194,23 @@ def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model):
             '可附 1-3 个代表性个股与相关ETF，格式：代表个股：简称(代码)、…；相关ETF：简称(代码)，'
             '不明确则省略个股/ETF 部分)","第2条...",...]}\n'
             'points 数组长度须与新闻条数相同、顺序一致。') % (regime_label, summary_kw, '\n'.join(lines))
+    if etf_flow and etf_flow.get('available'):
+        def _yi(v):
+            try:
+                return f"{float(v) / 1e8:+.2f}亿"
+            except Exception:  # noqa: BLE001
+                return '—'
+        byg = '；'.join(f"{g} {_yi(etf_flow['byGroup'].get(g, 0))}" for g in etf_flow.get('byGroup', {}))
+        top_out = '、'.join(f"{r['name']}({r['code']}){_yi(r.get('f62'))}" for r in etf_flow.get('topOut', [])[:3])
+        top_in = '、'.join(f"{r['name']}({r['code']}){_yi(r.get('f62'))}" for r in etf_flow.get('topIn', [])[:3])
+        user += (
+            '\n\n补充数据·ETF 主力资金（口径：二级市场主力净流入，非申赎；单位亿元）：\n'
+            f'板块汇总：{byg}。\n'
+            f'净流出榜 TOP3：{top_out}。\n'
+            f'净流入榜 TOP3：{top_in}。\n'
+            '请在总览 summary 中提及 ETF 资金面取向（例如资金由股转债 / 撤离宽基 / 加仓跨境等，'
+            '仅基于以上数字，不得编造具体金额）。'
+        )
     system = ('你是 A股 市场新闻摘要助手。把给定的财经新闻条目用中文压缩成客观、可追溯的每日综述与逐条要点。'
               '规则：1) 只能基于提供的新闻，不得编造；2) 不得预测后市涨跌、不得给出任何买卖/仓位建议；'
               '3) 逐条要点须指出该新闻对市场的方向(利好/利空/中性)及主要涉及板块；'
@@ -310,6 +327,15 @@ def main():
         lex = {"negators": ["严查", "打击", "收紧"], "deniers": ["暂未", "未落地", "落空"],
                "negatorWindow": 10, "keywords": []}
 
+    # ETF 主力资金流（来自同目录 latest.json，由 generate.py 先跑生成；供 AI 解读引用）
+    etf_flow = None
+    latest_path = os.path.join(here, 'latest.json')
+    if os.path.exists(latest_path):
+        try:
+            etf_flow = json.load(open(latest_path, encoding='utf-8')).get('etf')
+        except Exception:  # noqa: BLE001
+            etf_flow = None
+
     items = []
     src_stat = []
     # 主源 1：同花顺快讯（A股靶向，优先）
@@ -418,7 +444,7 @@ def main():
         if not key:
             continue
         try:
-            res = llm_summarize(top, label, summary_kw, key, base, model)
+            res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow)
         except Exception as e:
             res = {'used': False, 'error': str(e)}
         if res and res.get('used'):
