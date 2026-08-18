@@ -84,8 +84,8 @@ def http_get_json(url, referer=EM_REFERER, cb_name=None, timeout=TIMEOUT, retry=
     raise last_err or RuntimeError("未知错误")
 
 
-def clist_url(host, fs, pz, fields, po=1):
-    return ("https://" + host + "/api/qt/clist/get?pn=1&pz=" + str(pz) +
+def clist_url(host, fs, pz, fields, po=1, pn=1):
+    return ("https://" + host + "/api/qt/clist/get?pn=" + str(pn) + "&pz=" + str(pz) +
             "&po=" + str(po) + "&np=1&ut=" + UT + "&fltt=2&invt=2&fid=f62&fs=" +
             urllib.parse.quote(fs, safe="") + "&fields=" + fields)
 
@@ -164,11 +164,11 @@ OUT_HOSTS = ["push2delay.eastmoney.com", "push2.eastmoney.com"]
 OUT_FIELDS = "f2,f3,f10,f12,f14,f62,f184"
 
 
-def fetch_on(hosts, fs, pz, po=1, fields=OUT_FIELDS):
+def fetch_on(hosts, fs, pz, po=1, fields=OUT_FIELDS, pn=1):
     cb = "emcb_" + str(int(time.time() * 1000))
     for host in hosts:
         try:
-            url = clist_url(host, fs, pz, fields, po) + "&cb=" + cb
+            url = clist_url(host, fs, pz, fields, po, pn) + "&cb=" + cb
             return norm_diff(http_get_json(url, EM_REFERER, cb))
         except Exception as e:  # noqa: BLE001
             log(f"    · 域名 {host} 失败: {e}")
@@ -186,6 +186,73 @@ def fetch_stocks_on(hosts, po=1, pz=12):
         except Exception as e:  # noqa: BLE001
             log(f"    · 域名 {host} 个股失败: {e}")
     return []
+
+
+# ============================== ETF 主力资金流（A 引擎扩展） ==============================
+# 东财 b:MK 系列板块分组：MK0021 沪深ETF / MK0022 跨境ETF / MK0023 商品ETF / MK0024 货币ETF。
+# 注意：债券型 ETF 归属 MK0021（沪深ETF）组内；f62 为主力净流入（二级市场成交口径，单位元），
+#       与同花顺 iFinD 的"申赎口径（份额×净值）"不同 —— 页面与 AI 解读均须标注口径。
+ETF_GROUPS = [
+    ("b:MK0021", "沪深ETF"),
+    ("b:MK0022", "跨境ETF"),
+    ("b:MK0023", "商品ETF"),
+    ("b:MK0024", "货币ETF"),
+]
+ETF_FIELDS = "f2,f3,f12,f14,f62,f184,f66,f72"
+
+
+def fetch_etf_flow(max_per_group=1500, page=100):
+    """全量 ETF（沪深/跨境/商品/货币）主力净流入（f62, 单位元）。
+
+    分页拉全量（push2delay 单页上限 100），避免只拿到 f62 降序前 100 而漏掉净流出。
+    返回：
+      available: 是否可用（盘前/盘中未回填时 f62 全 0 → False）
+      total/groups: 抓到条数
+      topIn/topOut: 净流入/净流出 TOP10（按 f62）
+      byGroup: 各板块组 f62 合计（元）
+      caveat: 口径说明
+    """
+    groups, all_rows = {}, []
+    for fs, gname in ETF_GROUPS:
+        rows, pn = [], 1
+        while pn <= 20 and len(rows) < max_per_group:
+            got = fetch_on(OUT_HOSTS, fs, page, 1, ETF_FIELDS, pn=pn)
+            if not got:
+                break
+            rows += got
+            if len(got) < page:
+                break
+            pn += 1
+        for r in rows:
+            if not r.get("f12"):
+                continue
+            all_rows.append({
+                "code": r.get("f12"), "name": r.get("f14"),
+                "price": r.get("f2"), "pct": r.get("f3"),
+                "f62": r.get("f62"), "f184": r.get("f184"), "group": gname,
+            })
+        groups[gname] = len(rows)
+    valid = [r for r in all_rows if isinstance(r.get("f62"), (int, float))]
+    nonzero = [r for r in valid if r["f62"]]
+    available = len(nonzero) >= 5          # 盘前 f62 未回填 → 全 0 → 标记不可用
+    top_in, top_out, by_group = [], [], {}
+    if available:
+        valid.sort(key=lambda r: r["f62"], reverse=True)
+        top_in = valid[:10]
+        top_out = valid[-10:][::-1]
+        for r in valid:
+            g = r["group"]
+            by_group[g] = by_group.get(g, 0) + (r["f62"] or 0)
+        by_group = {g: round(v, 2) for g, v in by_group.items()}
+    return {
+        "available": available,
+        "total": len(valid),
+        "groups": groups,
+        "topIn": top_in,
+        "topOut": top_out,
+        "byGroup": by_group,
+        "caveat": "主力资金口径（二级市场成交），与 iFinD 申赎口径（份额×净值）不同",
+    }
 
 
 def fetch_history(secid):
@@ -384,6 +451,13 @@ def main():
     stats["outStocks"] = len(outStocks)
     log(f"    -> 净流出板块 {stats['out']} 条，净流出个股 {stats['outStocks']} 条")
 
+    # ④c ETF 主力资金流（b:MK 系列全量；盘前 f62 未回填则 available=False）
+    log("④c ETF 主力资金流 ...")
+    etf = fetch_etf_flow()
+    stats["etf"] = etf["total"]
+    stats["etfAvail"] = etf["available"]
+    log(f"    -> ETF {stats['etf']} 只，available={stats['etfAvail']}，净流入/净流出榜 {len(etf['topIn'])}/{len(etf['topOut'])}")
+
     hist = {}
     top_boards = [b for b in industry[:HIST_TOP]] + [b for b in concept[:HIST_TOP]]
     log(f"⑤ 历史资金流（{len(top_boards)} 个板块）...")
@@ -419,6 +493,7 @@ def main():
         "hist": hist,
         "out": out,
         "outStocks": outStocks,
+        "etf": etf,
         "earnings": earnings,
     }
 
