@@ -255,6 +255,45 @@ def fetch_etf_flow(max_per_group=1500, page=100):
     }
 
 
+# ============================== 外盘指数（美股/港股/亚太/欧股） ==============================
+# 东财 secid：100.=美股指数，100.HSI=恒生，100.KS11=韩国KOSPI，100.N225=日经，100.SX5E=欧洲斯托克50，100.GDAXI=德国DAX
+# f3 = 涨跌幅（% 原值，如 -5.27 表示 -5.27%）；美股为前一日收盘，港股/亚太/欧股为最新交易日（亚盘实时）
+OVERSEAS_INDICES = [
+    ("100.DJIA",  "道琼斯"),
+    ("100.SPX",   "标普500"),
+    ("100.IXIC",  "纳斯达克"),
+    ("100.HSI",   "恒生指数"),
+    ("100.KS11",  "韩国KOSPI"),
+    ("100.N225",  "日经225"),
+    ("100.SX5E",  "欧洲斯托克50"),
+    ("100.GDAXI", "德国DAX30"),
+]
+
+
+def fetch_overseas():
+    """外盘 8 大指数涨跌幅（%）。供 brief.py 做外盘风险分级 + AI 解读引用。"""
+    secids = ",".join(s for s, _ in OVERSEAS_INDICES)
+    cb = "emcb_" + str(int(time.time() * 1000))
+    for host in EM_HOSTS:
+        try:
+            url = ulist_url(host, secids, "f2,f3,f4,f12,f14") + "&cb=" + cb
+            rows = norm_diff(http_get_json(url, EM_REFERER, cb))
+            out = []
+            for r in rows:
+                code = r.get("f12")
+                name = next((n for s, n in OVERSEAS_INDICES if s.split(".")[1] == code), None)
+                out.append({
+                    "code": code,
+                    "name": name or r.get("f14"),
+                    "price": r.get("f2"),
+                    "pct": r.get("f3"),
+                })
+            return out
+        except Exception as e:  # noqa: BLE001
+            log(f"    · 域名 {host} 外盘失败: {e}")
+    return []
+
+
 def fetch_history(secid):
     cb = "emcb_" + str(int(time.time() * 1000))
     for host in EM_HIS_HOSTS:
@@ -458,6 +497,13 @@ def main():
     stats["etfAvail"] = etf["available"]
     log(f"    -> ETF {stats['etf']} 只，available={stats['etfAvail']}，净流入/净流出榜 {len(etf['topIn'])}/{len(etf['topOut'])}")
 
+    # ④d 外盘指数（美股/港股/亚太/欧股）——供 brief.py 外盘风险分级 + AI 解读
+    log("④d 外盘指数 ...")
+    overseas = fetch_overseas()
+    stats["overseas"] = len(overseas)
+    if overseas:
+        log("    -> 外盘: " + "、".join(f"{o['name']} {o['pct']}%" for o in overseas[:8]))
+
     hist = {}
     top_boards = [b for b in industry[:HIST_TOP]] + [b for b in concept[:HIST_TOP]]
     log(f"⑤ 历史资金流（{len(top_boards)} 个板块）...")
@@ -494,6 +540,7 @@ def main():
         "out": out,
         "outStocks": outStocks,
         "etf": etf,
+        "overseas": overseas,
         "earnings": earnings,
     }
 
