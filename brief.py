@@ -177,7 +177,7 @@ def call_llm(system, user, api_key, base_url, model, timeout=50):
         return None, str(e)
 
 
-def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_flow=None):
+def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_flow=None, overseas=None):
     """用 LLM 把 top 新闻压缩成综述 + 逐条要点；只基于给定新闻，不预测不荐股。"""
     if not top:
         return {'used': False, 'error': 'empty items'}
@@ -211,6 +211,19 @@ def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_f
             '请在总览 summary 中提及 ETF 资金面取向（例如资金由股转债 / 撤离宽基 / 加仓跨境等，'
             '仅基于以上数字，不得编造具体金额）。'
         )
+    if overseas:
+        ov_parts = []
+        for it in overseas:
+            if it.get('pct') is None:
+                continue
+            ov_parts.append('%s %+.2f%%' % (it.get('name') or it.get('code'), it.get('pct')))
+        if ov_parts:
+            user += (
+                '\n\n补充数据·外盘行情（美股为前一日收盘，港股/亚太/欧股为最新交易日）：\n'
+                '，'.join(ov_parts) + '。\n'
+                '若外盘明显走弱（如亚太指数跌超 3% 或美股跌超 1.5%），请在 summary 中提示外部风险对 A 股的传导，'
+                '但不得凭空编造外盘数字。'
+            )
     system = ('你是 A股 市场新闻摘要助手。把给定的财经新闻条目用中文压缩成客观、可追溯的每日综述与逐条要点。'
               '规则：1) 只能基于提供的新闻，不得编造；2) 不得预测后市涨跌、不得给出任何买卖/仓位建议；'
               '3) 逐条要点须指出该新闻对市场的方向(利好/利空/中性)及主要涉及板块；'
@@ -244,6 +257,36 @@ def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_f
         if note and isinstance(note, str):
             m['ai_note'] = note.strip()
     return {'used': bool(summary or points), 'model': model, 'summary': summary, 'error': None}
+
+
+def oversea_risk_level(indices):
+    """外盘风险分级：0 无 / 1 弱 / 2 强。
+
+    强(2)：韩国KOSPI 或 日经225 ≤ -3%           —— 亚太系统性风险日
+    弱(1)：美股三大(道琼斯/标普500/纳斯达克)任一 ≤ -1.5%，或 恒生 ≤ -2%，或 欧股 ≤ -2%
+    返回 (level, hits)，hits 为命中的「名称 涨跌幅%」文本列表。
+    """
+    if not indices:
+        return 0, []
+    level, hits = 0, []
+    for it in indices:
+        name = it.get('name') or ''
+        pct = it.get('pct')
+        if pct is None:
+            continue
+        if name in ('韩国KOSPI', '日经225') and pct <= -3:
+            level = 2
+            hits.append('%s %+.2f%%' % (name, pct))
+        elif name in ('道琼斯', '标普500', '纳斯达克') and pct <= -1.5:
+            level = max(level, 1)
+            hits.append('%s %+.2f%%' % (name, pct))
+        elif name == '恒生指数' and pct <= -2:
+            level = max(level, 1)
+            hits.append('%s %+.2f%%' % (name, pct))
+        elif name in ('欧洲斯托克50', '德国DAX30') and pct <= -2:
+            level = max(level, 1)
+            hits.append('%s %+.2f%%' % (name, pct))
+    return level, hits[:5]
 
 
 def indices_of(text, kw):
@@ -327,14 +370,17 @@ def main():
         lex = {"negators": ["严查", "打击", "收紧"], "deniers": ["暂未", "未落地", "落空"],
                "negatorWindow": 10, "keywords": []}
 
-    # ETF 主力资金流（来自同目录 latest.json，由 generate.py 先跑生成；供 AI 解读引用）
+    # ETF 主力资金流 + 外盘指数（来自同目录 latest.json，由 generate.py 先跑生成；供 AI 解读/regime 参考）
     etf_flow = None
+    overseas = None
     latest_path = os.path.join(here, 'latest.json')
     if os.path.exists(latest_path):
         try:
-            etf_flow = json.load(open(latest_path, encoding='utf-8')).get('etf')
+            lj = json.load(open(latest_path, encoding='utf-8'))
+            etf_flow = lj.get('etf')
+            overseas = lj.get('overseas')
         except Exception:  # noqa: BLE001
-            etf_flow = None
+            etf_flow, overseas = None, None
 
     items = []
     src_stat = []
@@ -394,6 +440,27 @@ def main():
     else:
         regime, label, strength = 'flat', '平缓', abs(ratio)
 
+    # ---- 外盘风险加权：词库判定后，把外盘大跌作为风险项折算进 off ----
+    # 弱风险(+25%)：美股跌≥1.5% 或 恒生/欧股跌≥2%；强风险(+50% 且进攻封顶为平缓)：KOSPI/日经跌≥3%
+    # 设计理由：外盘风险是"给进攻信心打折"而非"直接反转"，只有词库本身偏空才可能翻避险；
+    # 强风险下禁止判"进攻"（亚太系统性风险日），最多给"平缓 · 外盘风险"。
+    risk_level, risk_hits = oversea_risk_level(overseas)
+    risk_note = '；'.join(risk_hits)
+    if risk_level >= 1:
+        bias = 0.25 if risk_level == 1 else 0.50
+        off += (on + off) * bias
+        total = on + off
+        net = on - off
+        ratio = net / total if total > 0 else 0
+        if ratio > 0.15:
+            regime, label, strength = 'on', '进攻', min(1, ratio)
+        elif ratio < -0.15:
+            regime, label, strength = 'off', '避险 / 下跌风险', min(1, abs(ratio))
+        else:
+            regime, label, strength = 'flat', '平缓', abs(ratio)
+        if risk_level >= 2 and regime == 'on':
+            regime, label = 'flat', '平缓 · 外盘风险'
+
     # 综述：汇总 top drivers（按 macro 归类）
     on_kw, off_kw = {}, {}
     for m in matched:
@@ -444,7 +511,7 @@ def main():
         if not key:
             continue
         try:
-            res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow)
+            res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow, overseas)
         except Exception as e:
             res = {'used': False, 'error': str(e)}
         if res and res.get('used'):
@@ -462,6 +529,7 @@ def main():
         'source': ' | '.join(src_stat) + src_suffix,
         'regime': {'regime': regime, 'label': label, 'onScore': round(on, 1),
                    'offScore': round(off, 1), 'strength': round(strength, 2)},
+        'overseaRisk': {'level': risk_level, 'hits': risk_hits, 'note': risk_note},
         'summary': summary,
         'summary_kw': summary_kw,
         'factors': factors,
