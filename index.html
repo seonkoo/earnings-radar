@@ -145,6 +145,7 @@ nav.bottom button.active{color:var(--accent);}
       <h3>📋 每日要闻 <span class="tag">服务器 08:30 / 22:00 自动更新</span></h3>
       <div id="briefHomeMeta" class="hint">读取中…</div>
       <div id="briefHomeRegime"></div>
+      <div id="briefHomeOverseaRisk"></div>
       <div id="briefHomeSummary" class="b-summary"></div>
       <div id="briefHomeFactors"></div>
       <div id="briefHomeList"></div>
@@ -244,6 +245,7 @@ nav.bottom button.active{color:var(--accent);}
       <h3>📋 每日要闻 <span class="tag">服务器 08:30 / 22:00 自动更新</span></h3>
       <div id="briefMeta" class="hint">读取中…</div>
       <div id="briefRegime"></div>
+      <div id="briefOverseaRisk"></div>
       <div id="briefSummary" class="b-summary"></div>
       <div id="briefFactors"></div>
       <div id="briefList"></div>
@@ -851,16 +853,23 @@ function briefItemsHtml(items,limit){
       '</div></div>';
   }).join('');
 }
+function overseaRiskHtml(r){
+  if(!r||!r.level)return '';
+  var col=r.level>=2?'#f85149':'#d29922';
+  return '<div style="border:1px solid '+col+';border-radius:8px;padding:7px 10px;margin-top:8px;font-size:12px;color:'+col+';line-height:1.6;"><b>🌍 外盘风险提示</b> <span style="color:#c9d1d9;">'+esc((r.note||'')||'')+'</span>'+(r.level>=2?'<br><span style="color:#f85149;">亚太指数大跌，regime 已按外盘风险封顶为「平缓」，请勿按进攻操作</span>':'')+'</div>';
+}
 function renderBrief(b){
   if(!b)return;state.brief=b;
   var meta=$('briefMeta');if(meta)meta.innerHTML='生成于 <b>'+esc(b.generated_at||'')+'</b> · '+(b.fromServer===false?'<span style="color:#d29922;">实时</span>':'<span style="color:#3fb950;">服务器快照</span>')+(b.source?' · '+esc(b.source):'');
   var rg=$('briefRegime');if(rg)rg.innerHTML=briefRegimeHtml(b.regime);
+  var or=$('briefOverseaRisk');if(or)or.innerHTML=overseaRiskHtml(b.overseaRisk);
   var llmBadge=(b.llm&&b.llm.used)?' <span class="ai-badge">🤖 AI 辅助 · '+esc(b.llm.model||'')+'</span>':'';
   var sm=$('briefSummary');if(sm)sm.innerHTML='<b>今日综述：</b>'+esc(b.summary||'')+llmBadge;
   var fb=$('briefFactors');if(fb)fb.innerHTML=briefFactorsHtml(b.factors);
   var ls=$('briefList');if(ls)ls.innerHTML=briefItemsHtml(b.items,14);
   var hm=$('briefHomeMeta');if(hm)hm.innerHTML=(b.fromServer===false?'实时生成':'生成于 '+esc(b.generated_at||''))+(b.source?' · '+esc(b.source):'');
   var hr=$('briefHomeRegime');if(hr)hr.innerHTML=briefRegimeHtml(b.regime);
+  var hor=$('briefHomeOverseaRisk');if(hor)hor.innerHTML=overseaRiskHtml(b.overseaRisk);
   var hs=$('briefHomeSummary');if(hs)hs.innerHTML='<b>今日综述：</b>'+esc(b.summary||'')+llmBadge;
   var hf=$('briefHomeFactors');if(hf)hf.innerHTML=briefFactorsHtml(b.factors);
   var hl=$('briefHomeList');if(hl)hl.innerHTML=briefItemsHtml(b.items,5);
