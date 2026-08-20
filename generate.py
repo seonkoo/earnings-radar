@@ -294,6 +294,86 @@ def fetch_overseas():
     return []
 
 
+# ============================== 海外宏观（美债收益率 / 美联储利率 · FRED） ==============================
+# FRED 公开 CSV（无需 key）：DGS10=美债10年、DGS2=美债2年、DFF=有效联邦基金利率(日频)
+# 弥补"外盘只抓指数涨跌"的盲区：美债收益率/利差/加息预期是 A股 风险偏好的先行指标
+FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
+FRED_SERIES = {
+    "us10y": "DGS10",   # 美国10年期国债收益率
+    "us2y":  "DGS2",    # 美国2年期国债收益率
+    "fed":   "DFF",     # 有效联邦基金利率（日频）
+}
+
+
+def fetch_fred_csv(series):
+    """取 FRED 单序列 CSV，返回 [(date, value_or_None), ...]（按日期升序）。带重试抗瞬时抖动。"""
+    url = FRED_BASE + series
+    raw = None
+    last_err = None
+    for attempt in range(1, 3):
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", UA)
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                raw = resp.read().decode("utf-8", "ignore")
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt < 2:
+                time.sleep(1.5 * attempt)
+    if raw is None:
+        log(f"    · FRED {series} 失败: {last_err}")
+        return []
+    rows = []
+    for line in raw.splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        d, v = parts[0], parts[1].strip()
+        if v in (".", "", "NaN"):
+            rows.append((d, None))
+        else:
+            try:
+                rows.append((d, float(v)))
+            except ValueError:
+                rows.append((d, None))
+    return rows
+
+
+def _latest_two(rows):
+    """返回 (latest_val, prev_val, latest_date)，取最后两个非空值。"""
+    nonnull = [(d, v) for d, v in rows if v is not None]
+    if not nonnull:
+        return None, None, None
+    if len(nonnull) == 1:
+        return nonnull[0][1], None, nonnull[0][0]
+    return nonnull[-1][1], nonnull[-2][1], nonnull[-1][0]
+
+
+def fetch_macro():
+    """海外宏观：美债10Y/2Y收益率、10Y-2Y利差、联邦基金利率（FRED）。供 brief 宏观信号条 + AI 解读。"""
+    out = {"available": False, "source": "FRED",
+           "updated": datetime.now(CST).strftime("%Y-%m-%dT%H:%M:%S+08:00")}
+    series_data = {}
+    for key, sid in FRED_SERIES.items():
+        rows = fetch_fred_csv(sid)
+        v, prev, d = _latest_two(rows)
+        if v is None:
+            continue
+        chg = round(v - prev, 4) if prev is not None else None
+        series_data[key] = {"v": v, "chg": chg, "date": d}
+    if not series_data:
+        return out
+    out["available"] = True
+    out.update(series_data)
+    if "us10y" in series_data and "us2y" in series_data:
+        out["spread"] = round(series_data["us10y"]["v"] - series_data["us2y"]["v"], 4)
+    return out
+
+
 def fetch_history(secid):
     cb = "emcb_" + str(int(time.time() * 1000))
     for host in EM_HIS_HOSTS:
@@ -504,6 +584,22 @@ def main():
     if overseas:
         log("    -> 外盘: " + "、".join(f"{o['name']} {o['pct']}%" for o in overseas[:8]))
 
+    # ④e 海外宏观（美债10Y/2Y收益率、利差、联邦基金利率 · FRED）——弥补"只看指数涨跌"盲区
+    log("④e 海外宏观（FRED 美债/利率）...")
+    macro = fetch_macro()
+    stats["macro"] = "ok" if macro.get("available") else "fail"
+    if macro.get("available"):
+        parts = []
+        if "us10y" in macro:
+            parts.append("美债10Y %.2f%%" % macro["us10y"]["v"])
+        if "us2y" in macro:
+            parts.append("2Y %.2f%%" % macro["us2y"]["v"])
+        if macro.get("spread") is not None:
+            parts.append("利差 %.2f%%" % macro["spread"])
+        if "fed" in macro:
+            parts.append("联邦基金 %.2f%%" % macro["fed"]["v"])
+        log("    -> 宏观: " + "、".join(parts))
+
     hist = {}
     top_boards = [b for b in industry[:HIST_TOP]] + [b for b in concept[:HIST_TOP]]
     log(f"⑤ 历史资金流（{len(top_boards)} 个板块）...")
@@ -541,6 +637,7 @@ def main():
         "outStocks": outStocks,
         "etf": etf,
         "overseas": overseas,
+        "macro": macro,
         "earnings": earnings,
     }
 
@@ -599,6 +696,7 @@ if __name__ == "__main__":
                       "hist_ok": 0, "hist_fail": 0},
             "indices": [], "industry": [], "concept": [], "stocks": [], "hist": {},
             "out": [], "outStocks": [],
+            "macro": {"available": False},
             "earnings": {"overview": {"bull": 0, "bear": 0, "neutral": 0, "total": 0},
                          "stocks": [], "items": []},
         }
