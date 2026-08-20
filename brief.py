@@ -289,14 +289,17 @@ CIRCUIT_KOSPI = -8.0
 CIRCUIT_NIKKEI = -8.0
 
 
-def llm_classify_items(items, api_key, base_url, model, batch=10):
+def llm_classify_items(items, api_key, base_url, model, batch=10, _depth=0):
     """智谱按实际内容（标题+摘要）批量判定新闻方向。返回与 items 等长的 list[dict]。
 
     字段：dir(on/off/flat)、strength(1-5)、secs(板块)、cat(类别)、reason(一句理由)。
-    单批缺失 ≤ 20% 时按中性补齐（宽容）；超过则 raise RuntimeError（调用方整体降级词库并记录原因）。
+    模型可能提前停止导致整批缺失：对该批缺失条目按"半批→…→逐条"递归补判（_depth 上限 4），
+    递归后仍缺失的条目按中性兜底。LLM 调用完全失败（超时/非法 JSON）才 raise（调用方整体降级词库）。
     """
     if not items:
         return []
+    if batch < 1:
+        batch = 1
     out = [None] * len(items)
     for start in range(0, len(items), batch):
         chunk = items[start:start + batch]
@@ -356,16 +359,20 @@ def llm_classify_items(items, api_key, base_url, model, batch=10):
                 strength = 3
             out[i] = {'dir': d, 'strength': strength, 'secs': secs, 'cat': cat,
                       'reason': str(r.get('reason') or '').strip()}
-        if any(x is None for x in out[start:start + batch]):
-            # 宽容补齐：缺失 ≤ 20% 按中性处理；超过则整体失败
-            missing = [i for i in range(start, start + batch) if out[i] is None]
-            if len(missing) <= max(1, int(len(chunk) * 0.2)):
-                for mi in missing:
+        # 缺失补判：递归降批（半批→…→逐条），仍缺则中性兜底
+        missing = [i for i in range(start, min(start + batch, len(items))) if out[i] is None]
+        if missing:
+            if _depth < 4:
+                sub_items = [items[i] for i in missing]
+                sub = llm_classify_items(sub_items, api_key, base_url, model,
+                                         batch=max(1, batch // 2), _depth=_depth + 1)
+                for rel, mi in enumerate(missing):
+                    if rel < len(sub) and sub[rel]:
+                        out[mi] = sub[rel]
+            for mi in missing:
+                if out[mi] is None:
                     out[mi] = {'dir': 'flat', 'strength': 1, 'secs': [], 'cat': '其他',
                                'reason': '模型未输出，按中性处理'}
-            else:
-                raise RuntimeError('智谱判定缺失过多: 期望≥%d 实得%d | 输出:%s'
-                                   % (len(chunk), len(chunk) - len(missing), content[:300]))
     return out
 
 
