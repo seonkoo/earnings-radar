@@ -493,8 +493,8 @@ def call_llm(system, user, api_key, base_url, model, timeout=50, max_tokens=1200
         return None, str(e)
 
 
-def llm_classify_earnings_titles(items, api_key, base_url, model, batch=25):
-    """智谱按公告标题语义批量判定利好/利空/中性。返回与 items 等长的 list[dict]；失败返回 None。"""
+def llm_classify_earnings_titles(items, api_key, base_url, model, batch=12):
+    """智谱按公告标题语义批量判定利好/利空/中性。返回与 items 等长的 list[dict]；失败 raise。"""
     if not items:
         return []
     out = [None] * len(items)
@@ -505,9 +505,10 @@ def llm_classify_earnings_titles(items, api_key, base_url, model, batch=25):
             '以下是 A股 上市公司公告标题，请按"实际含义"判断每条对业绩/经营的方向：\n%s\n\n'
             '要求：仅依据标题，不编造数字。输出严格 JSON（不要任何解释文字）：\n'
             '{"items":[{"i":0,"sentiment":"bull","reason":"一句话理由"},...]}\n'
-            'sentiment=bull(利好)/bear(利空)/neutral(中性)。注意语义而非机械关键词：'
+            'sentiment=bull(利好)/bear(利空)/neutral(中性)；reason 不超过 20 字。'
+            '注意语义而非机械关键词：'
             '"扭亏为盈/拟回购/高分红/中标/大额订单/预增且幅度大"判利好；"预减/下修/亏损扩大/暴雷/风险警示/立案"判利空；'
-            '"预增但幅度收窄/例行披露/股东大会通知"判中性。items 数组必须与输入条数相同、顺序一致。'
+            '"预增但幅度收窄/例行披露/股东大会通知"判中性。items 数组必须与输入条数相同、顺序一致，缺失任何一条都不行。'
         ) % '\n'.join(lines)
         system = ('你是 A股 财报公告研判助手。只依据公告标题客观判断利好/利空/中性，不预测、不荐股。'
                   '输出必须为合法 JSON。')
@@ -534,7 +535,8 @@ def llm_classify_earnings_titles(items, api_key, base_url, model, batch=25):
                 raise RuntimeError('智谱财报判定输出非法 JSON: %s' % content[:200])
         arr = obj.get('items') or []
         if not isinstance(arr, list) or len(arr) < len(chunk):
-            raise RuntimeError('智谱财报判定条数不足: 期望≥%d 实得%d' % (len(chunk), len(arr)))
+            raise RuntimeError('智谱财报判定条数不足: 期望≥%d 实得%d | 输出:%s'
+                               % (len(chunk), len(arr), content[:300]))
         for r in arr:
             i = r.get('i')
             if not isinstance(i, int) or not (0 <= i < len(items)):
@@ -599,6 +601,7 @@ def build_earnings():
             judged = llm_classify_earnings_titles(items, key, base, model)
         except Exception as e:  # noqa: BLE001
             judged = None
+            earn_judge = {'used': False, 'model': model, 'error': '智谱财报判定失败: %s' % e}
             log(f"    · 智谱财报判定失败: {e}")
         if judged is not None and len(judged) == len(items):
             for i, it in enumerate(items):
@@ -609,7 +612,8 @@ def build_earnings():
             log(f"    -> 财报方向由智谱判定({model}) 完成")
             break
         else:
-            earn_judge = {'used': False, 'model': model, 'error': 'LLM 输出解析失败/超时，回退关键词'}
+            if not earn_judge.get('error'):
+                earn_judge = {'used': False, 'model': model, 'error': 'LLM 输出解析失败/超时，回退关键词'}
             log("    · 智谱财报判定不可用，回退关键词 classify")
     if not earn_judge['used'] and not earn_judge.get('error'):
         earn_judge = {'used': False, 'model': None, 'error': '未配置可用 LLM Key'}
