@@ -341,10 +341,16 @@ def llm_classify_items(items, api_key, base_url, model, batch=10, _depth=0):
                 obj = json.loads(m.group(0))
             except Exception:
                 raise RuntimeError('智谱判定输出非法 JSON: %s' % content[:200])
+        if isinstance(obj, list):       # 模型偶发输出顶层数组 → 当作 items 数组
+            obj = {'items': obj}
+        if not isinstance(obj, dict):
+            raise RuntimeError('智谱判定输出结构异常: %s' % content[:300])
         arr = obj.get('items') or []
         if not isinstance(arr, list):
             raise RuntimeError('智谱判定 items 非数组: %s' % content[:300])
         for r in arr:
+            if not isinstance(r, dict):   # 防御：模型偶发输出非对象元素
+                continue
             i = r.get('i')
             if not isinstance(i, int) or not (0 <= i < len(items)):
                 continue
