@@ -798,4 +798,16 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        print('FATAL:\n' + tb)
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'brief_fatal.json'),
+                      'w', encoding='utf-8') as f:
+                json.dump({'error': tb[-4000:]}, f, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            pass
+        raise SystemExit(0)   # 退出码 0：让提交步骤把错误快照提交上去，便于排查
