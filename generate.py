@@ -533,11 +533,17 @@ def llm_classify_earnings_titles(items, api_key, base_url, model, batch=12):
                 obj = json.loads(m.group(0))
             except Exception:
                 raise RuntimeError('智谱财报判定输出非法 JSON: %s' % content[:200])
+        if isinstance(obj, list):       # 模型偶发输出顶层数组 → 当作 items 数组
+            obj = {'items': obj}
+        if not isinstance(obj, dict):
+            raise RuntimeError('智谱财报判定输出结构异常: %s' % content[:300])
         arr = obj.get('items') or []
         if not isinstance(arr, list) or len(arr) < len(chunk):
             raise RuntimeError('智谱财报判定条数不足: 期望≥%d 实得%d | 输出:%s'
                                % (len(chunk), len(arr), content[:300]))
         for r in arr:
+            if not isinstance(r, dict):
+                continue
             i = r.get('i')
             if not isinstance(i, int) or not (0 <= i < len(items)):
                 continue
