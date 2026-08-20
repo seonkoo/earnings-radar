@@ -142,16 +142,18 @@ nav.bottom button.active{color:var(--accent);}
       <div id="regimeHome"><span class="hint">新闻扫描后显示…</span></div>
     </div>
     <div class="card">
-      <h3>📋 每日要闻 <span class="tag">服务器 08:30 / 22:00 自动更新</span></h3>
+      <h3>📋 每日要闻 <span class="tag">服务器 每日 08:30 / 11:30 / 15:00 / 22:00 自动更新</span></h3>
       <div id="briefHomeMeta" class="hint">读取中…</div>
       <div id="briefHomeRegime"></div>
       <div id="briefHomeOverseaRisk"></div>
+      <div id="briefHomeMacro"></div>
+      <div id="briefHomeGlobal"></div>
       <div id="briefHomeSummary" class="b-summary"></div>
       <div id="briefHomeFactors"></div>
       <div id="briefHomeList"></div>
     </div>
     <div class="card">
-      <h3>📮 今日方向 <span class="tag">每日 08:30 / 22:00 自动抓取快照</span></h3>
+      <h3>📮 今日方向 <span class="tag">每日 08:30 / 11:30 / 15:00 / 22:00 自动抓取快照</span></h3>
       <div id="reportMeta" class="hint">打开页面即拉取实时数据</div>
       <div id="reportBox">正在加载…</div>
       <div class="row">
@@ -230,7 +232,7 @@ nav.bottom button.active{color:var(--accent);}
         <tbody id="tbodyOutStocks"></tbody></table></div>
     </div>
     <div class="card">
-      <h3>📊 ETF 主力资金流向 <span class="tag">净流入/流出 TOP · 22:00 自动更新</span></h3>
+      <h3>📊 ETF 主力资金流向 <span class="tag">净流入/流出 TOP · 每日 08:30/11:30/15:00/22:00 自动更新</span></h3>
       <div id="etfCard"><div class="empty">加载中…</div></div>
     </div>
     <div class="card">
@@ -242,10 +244,12 @@ nav.bottom button.active{color:var(--accent);}
 
   <section class="tab" id="tab-news">
     <div class="card">
-      <h3>📋 每日要闻 <span class="tag">服务器 08:30 / 22:00 自动更新</span></h3>
+      <h3>📋 每日要闻 <span class="tag">服务器 每日 08:30 / 11:30 / 15:00 / 22:00 自动更新</span></h3>
       <div id="briefMeta" class="hint">读取中…</div>
       <div id="briefRegime"></div>
       <div id="briefOverseaRisk"></div>
+      <div id="briefMacro"></div>
+      <div id="briefGlobal"></div>
       <div id="briefSummary" class="b-summary"></div>
       <div id="briefFactors"></div>
       <div id="briefList"></div>
@@ -461,7 +465,7 @@ function renderEtf(){
   var el=$('etfCard');if(!el)return;
   var etf=state.etf;
   if(!etf){el.innerHTML='<div class="empty">等待服务器数据…</div>';return;}
-  if(!etf.available){el.innerHTML='<div class="hint">⏳ 盘前 / 数据未回填（ETF 主力净流入暂无），当日 22:00 自动更新昨日数据。</div>';return;}
+  if(!etf.available){el.innerHTML='<div class="hint">⏳ 盘前 / 数据未回填（ETF 主力净流入暂无），盘前 08:30 自动更新昨日数据，盘中 11:30/15:00、盘后 22:00 滚动更新。</div>';return;}
   var h='',groups=etf.byGroup||{},gkeys=Object.keys(groups);
   if(gkeys.length){
     var max=Math.max.apply(null,gkeys.map(function(g){return Math.abs(groups[g]);}))||1;
@@ -666,7 +670,7 @@ function renderAll(){state.histEmpty=!(state.hist&&Object.keys(state.hist).lengt
   if(!state.lastReportText)$('reportBox').textContent='点「📮 早报/晚报」生成；或直接看上方板块数据。';}
 function renderSnapInfo(){var el=$('snapInfo');if(!state.snapIndex||!state.snapIndex.length){el.innerHTML='（暂无快照记录）';return;}
   var head=state.snapIndex.slice(0,3).map(function(r){return '• '+String(r.time).slice(0,16)+' ['+r.status+'] 指数'+r.stats.indices+'/行业'+r.stats.industry+'/概念'+r.stats.concept;}).join('<br>');
-  el.innerHTML=('服务器已生成 <b>'+state.snapIndex.length+'</b> 份快照（每天08:30/22:00自动）。<br>'+head);}
+  el.innerHTML=('服务器已生成 <b>'+state.snapIndex.length+'</b> 份快照（每天 08:30/11:30/15:00/22:00 自动）。<br>'+head);}
 
 var DEFAULT_LEXICON={negatorWindow:10,negators:["严查","打击","收紧"],deniers:["暂未","未落地","落空"],sources:[],keywords:[
   {kw:"降准",secs:["银行","券商","地产"],dir:1,w:3,cat:"货币",macro:1},
@@ -854,15 +858,44 @@ function briefItemsHtml(items,limit){
   }).join('');
 }
 function overseaRiskHtml(r){
-  if(!r||!r.level)return '';
+  if(!r||(!r.level&&!r.circuit))return '';
+  if(r.circuit){
+    return '<div style="border:1px solid #f85149;background:rgba(248,81,73,.12);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:#f85149;line-height:1.6;">'
+      +'<b>🚨 '+(esc(r.circuit_name||'外盘熔断'))+'</b> <span style="color:#ffb3ab;">'+esc((r.note||'')||'')+'</span><br>'
+      +'<span style="color:#ffb3ab;">外部系统性风险，regime 已强制转「避险」，请勿按进攻 / 低吸操作</span></div>';
+  }
   var col=r.level>=2?'#f85149':'#d29922';
   return '<div style="border:1px solid '+col+';border-radius:8px;padding:7px 10px;margin-top:8px;font-size:12px;color:'+col+';line-height:1.6;"><b>🌍 外盘风险提示</b> <span style="color:#c9d1d9;">'+esc((r.note||'')||'')+'</span>'+(r.level>=2?'<br><span style="color:#f85149;">亚太指数大跌，regime 已按外盘风险封顶为「平缓」，请勿按进攻操作</span>':'')+'</div>';
+}
+function macroSignalHtml(m){
+  if(!m||!m.available)return '';
+  function arrow(chg){ if(chg==null)return ''; var a=chg>0?'▲':(chg<0?'▼':'—'); return a+(chg>0?'+':'')+chg.toFixed(2)+'%'; }
+  var rows=[];
+  if(m.us10y){ var up=m.us10y.chg>0.03, down=m.us10y.chg<-0.03; var col=up?'#f85149':(down?'#3fb950':'#c9d1d9');
+    rows.push('<span>美债10Y <b style="color:'+col+'">'+m.us10y.v.toFixed(2)+'%</b> <span style="color:'+col+'">'+arrow(m.us10y.chg)+'</span></span>'); }
+  if(m.us2y){ rows.push('<span>2Y <b>'+m.us2y.v.toFixed(2)+'%</b> <span style="color:#8b949e">'+arrow(m.us2y.chg)+'</span></span>'); }
+  if(m.spread!=null){ var inv=m.spread<0; var col=inv?'#f85149':'#c9d1d9';
+    rows.push('<span>利差 <b style="color:'+col+'">'+(m.spread>=0?'+':'')+m.spread.toFixed(2)+'%</b>'+(inv?' <span style="color:#f85149">倒挂·衰退预警</span>':'')); }
+  if(m.fed){ rows.push('<span>联邦基金 <b>'+m.fed.v.toFixed(2)+'%</b> <span style="color:#8b949e">'+arrow(m.fed.chg)+'</span></span>'); }
+  return '<div style="border:1px solid #30363d;border-radius:8px;padding:7px 10px;margin-top:8px;font-size:12px;color:#c9d1d9;line-height:1.9;">'
+    +'<b>🌐 海外宏观（FRED）</b> '+rows.join('　')+'</div>';
+}
+function globalItemsHtml(list){
+  if(!list||!list.length)return '';
+  var items=list.slice(0,5).map(function(g){
+    var secs=(g.secs||[]).slice(0,3).map(function(s){return '<span class="up">'+esc(s)+'</span>';}).join('、');
+    return '<div style="font-size:12px;color:#c9d1d9;line-height:1.6;">• '+esc(g.title)+' <span style="color:#8b949e;">→ A股联动：'+secs+'</span></div>';
+  }).join('');
+  return '<div style="border:1px solid #30363d;border-radius:8px;padding:7px 10px;margin-top:8px;">'
+    +'<b style="font-size:12px;color:#d29922;">🌐 全球个股联动</b>'+items+'</div>';
 }
 function renderBrief(b){
   if(!b)return;state.brief=b;
   var meta=$('briefMeta');if(meta)meta.innerHTML='生成于 <b>'+esc(b.generated_at||'')+'</b> · '+(b.fromServer===false?'<span style="color:#d29922;">实时</span>':'<span style="color:#3fb950;">服务器快照</span>')+(b.source?' · '+esc(b.source):'');
   var rg=$('briefRegime');if(rg)rg.innerHTML=briefRegimeHtml(b.regime);
   var or=$('briefOverseaRisk');if(or)or.innerHTML=overseaRiskHtml(b.overseaRisk);
+  var mc=$('briefMacro');if(mc)mc.innerHTML=macroSignalHtml(b.macro);
+  var gl=$('briefGlobal');if(gl)gl.innerHTML=globalItemsHtml(b.globalItems);
   var llmBadge=(b.llm&&b.llm.used)?' <span class="ai-badge">🤖 AI 辅助 · '+esc(b.llm.model||'')+'</span>':'';
   var sm=$('briefSummary');if(sm)sm.innerHTML='<b>今日综述：</b>'+esc(b.summary||'')+llmBadge;
   var fb=$('briefFactors');if(fb)fb.innerHTML=briefFactorsHtml(b.factors);
@@ -870,6 +903,8 @@ function renderBrief(b){
   var hm=$('briefHomeMeta');if(hm)hm.innerHTML=(b.fromServer===false?'实时生成':'生成于 '+esc(b.generated_at||''))+(b.source?' · '+esc(b.source):'');
   var hr=$('briefHomeRegime');if(hr)hr.innerHTML=briefRegimeHtml(b.regime);
   var hor=$('briefHomeOverseaRisk');if(hor)hor.innerHTML=overseaRiskHtml(b.overseaRisk);
+  var hmc=$('briefHomeMacro');if(hmc)hmc.innerHTML=macroSignalHtml(b.macro);
+  var hgl=$('briefHomeGlobal');if(hgl)hgl.innerHTML=globalItemsHtml(b.globalItems);
   var hs=$('briefHomeSummary');if(hs)hs.innerHTML='<b>今日综述：</b>'+esc(b.summary||'')+llmBadge;
   var hf=$('briefHomeFactors');if(hf)hf.innerHTML=briefFactorsHtml(b.factors);
   var hl=$('briefHomeList');if(hl)hl.innerHTML=briefItemsHtml(b.items,5);
