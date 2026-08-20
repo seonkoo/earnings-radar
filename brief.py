@@ -289,11 +289,11 @@ CIRCUIT_KOSPI = -8.0
 CIRCUIT_NIKKEI = -8.0
 
 
-def llm_classify_items(items, api_key, base_url, model, batch=25):
+def llm_classify_items(items, api_key, base_url, model, batch=12):
     """智谱按实际内容（标题+摘要）批量判定新闻方向。返回与 items 等长的 list[dict]。
 
     字段：dir(on/off/flat)、strength(1-5)、secs(板块)、cat(类别)、reason(一句理由)。
-    任一批解析失败 / 条数不足 → 返回 None（调用方整体降级词库）。
+    任一批解析失败 / 条数不足 → raise RuntimeError（调用方整体降级词库并记录原因）。
     """
     if not items:
         return []
@@ -310,10 +310,10 @@ def llm_classify_items(items, api_key, base_url, model, batch=25):
             '要求：仅依据给定文本，不预测涨跌、不荐股、不编造。输出严格 JSON（不要任何解释文字）：\n'
             '{"items":[{"i":0,"dir":"on","strength":3,"secs":["半导体"],"cat":"产业","reason":"一句话理由"},...]}\n'
             '字段说明：dir=on(利好/偏多) 或 off(利空/偏空) 或 flat(中性)；strength=影响强度 1-5；'
-            'secs=涉及的 A股板块名（0-3 个，中文）；cat=类别（产业/政策/宏观/海外/资金/风险/其他）；'
-            'reason=判断依据的一句话。注意语义而非关键词：如"不及预期""承压""待落地"应判利空或中性，'
+            'secs=涉及的 A股板块名（最多 2 个，中文）；cat=类别（产业/政策/宏观/海外/资金/风险/外围/其他）；'
+            'reason=判断依据（不超过 20 字）。注意语义而非关键词：如"不及预期""承压""待落地"应判利空或中性，'
             '"回购/中标/超预期/放量"判利好。若新闻主体是境外公司（如海力士/英伟达/三星/台积电/特斯拉等）'
-            '对 A股 的联动，cat 用"外围"。items 数组必须与输入条数相同、顺序一致。'
+            '对 A股 的联动，cat 用"外围"。items 数组必须与输入条数相同、顺序一致，缺失任何一条都不行。'
         ) % '\n'.join(lines)
         system = ('你是 A股 市场新闻研判助手。只依据给定新闻文本客观判断利好/利空/中性及影响，'
                   '不预测、不荐股。输出必须为合法 JSON。')
@@ -340,7 +340,8 @@ def llm_classify_items(items, api_key, base_url, model, batch=25):
                 raise RuntimeError('智谱判定输出非法 JSON: %s' % content[:200])
         arr = obj.get('items') or []
         if not isinstance(arr, list) or len(arr) < len(chunk):
-            raise RuntimeError('智谱判定条数不足: 期望≥%d 实得%d' % (len(chunk), len(arr)))
+            raise RuntimeError('智谱判定条数不足: 期望≥%d 实得%d | 输出:%s'
+                               % (len(chunk), len(arr), content[:300]))
         for r in arr:
             i = r.get('i')
             if not isinstance(i, int) or not (0 <= i < len(items)):
@@ -348,7 +349,7 @@ def llm_classify_items(items, api_key, base_url, model, batch=25):
             d = str(r.get('dir') or 'flat').strip().lower()
             if d not in ('on', 'off', 'flat'):
                 continue
-            secs = [str(s).strip() for s in (r.get('secs') or []) if str(s).strip()][:4]
+            secs = [str(s).strip() for s in (r.get('secs') or []) if str(s).strip()][:2]
             cat = str(r.get('cat') or '其他').strip() or '其他'
             try:
                 strength = max(1, min(5, int(r.get('strength') or 3)))
