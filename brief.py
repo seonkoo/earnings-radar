@@ -151,7 +151,7 @@ def dedup_items(items):
     return keep
 
 
-def call_llm(system, user, api_key, base_url, model, timeout=50):
+def call_llm(system, user, api_key, base_url, model, timeout=50, max_tokens=1200):
     """OpenAI 兼容 chat/completions，仅用标准库（无第三方依赖）。"""
     if not api_key:
         return None, 'no api key'
@@ -161,7 +161,7 @@ def call_llm(system, user, api_key, base_url, model, timeout=50):
         'messages': [{'role': 'system', 'content': system},
                      {'role': 'user', 'content': user}],
         'temperature': 0.3,
-        'max_tokens': 1200,
+        'max_tokens': max_tokens,
         'response_format': {'type': 'json_object'}
     }).encode('utf-8')
     req = urllib.request.Request(url, data=body, headers={
@@ -289,7 +289,7 @@ CIRCUIT_KOSPI = -8.0
 CIRCUIT_NIKKEI = -8.0
 
 
-def llm_classify_items(items, api_key, base_url, model, batch=30):
+def llm_classify_items(items, api_key, base_url, model, batch=25):
     """智谱按实际内容（标题+摘要）批量判定新闻方向。返回与 items 等长的 list[dict]。
 
     字段：dir(on/off/flat)、strength(1-5)、secs(板块)、cat(类别)、reason(一句理由)。
@@ -317,7 +317,11 @@ def llm_classify_items(items, api_key, base_url, model, batch=30):
         ) % '\n'.join(lines)
         system = ('你是 A股 市场新闻研判助手。只依据给定新闻文本客观判断利好/利空/中性及影响，'
                   '不预测、不荐股。输出必须为合法 JSON。')
-        content, err = call_llm(system, user, api_key, base_url, model)
+        content, err = None, None
+        for _t in range(2):   # 抗瞬时超时/截断：重试一次
+            content, err = call_llm(system, user, api_key, base_url, model, timeout=90, max_tokens=4000)
+            if content:
+                break
         if not content:
             return None
         txt = content.strip()
@@ -567,18 +571,23 @@ def main():
         ('SILICONFLOW_API_KEY', 'https://api.siliconflow.cn/v1', 'Qwen/Qwen3-8B'),
     ]
     judged = None
+    judge_err = '未配置可用 LLM Key'
     for envk, base, model in judge_providers:
         key = (os.environ.get(envk) or '').strip()
         if not key:
             continue
         try:
             judged = llm_classify_items(items, key, base, model)
+            judge_err = 'LLM 判定输出解析失败/超时，回退词库'
         except Exception as e:  # noqa: BLE001
             judged = None
+            judge_err = str(e)
             llm_judge = {'used': False, 'model': model, 'error': str(e)}
         if judged is not None and len(judged) == len(items):
             llm_judge = {'used': True, 'model': model, 'error': None}
             break
+    if not llm_judge['used']:
+        llm_judge = {'used': False, 'model': llm_judge['model'], 'error': judge_err}
     if llm_judge['used']:
         # 智谱判定：全部新闻按方向 + 强度进入 matched（kws 留空，由 secs 驱动综述）
         matched = build_matched_from_judged(items, judged)
