@@ -467,6 +467,83 @@ def fetch_announcements(page_size=PAGE_SIZE):
     raise last or RuntimeError("全部公告域名失败")
 
 
+def call_llm(system, user, api_key, base_url, model, timeout=50):
+    """OpenAI 兼容 chat/completions（仅标准库）。返回 (content, err)。"""
+    if not api_key:
+        return None, 'no api key'
+    url = base_url.rstrip('/') + '/chat/completions'
+    body = json.dumps({
+        'model': model,
+        'messages': [{'role': 'system', 'content': system},
+                     {'role': 'user', 'content': user}],
+        'temperature': 0.2,
+        'max_tokens': 1200,
+        'response_format': {'type': 'json_object'},
+    }).encode('utf-8')
+    req = urllib.request.Request(url, data=body, headers={
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + api_key,
+        'User-Agent': UA,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode('utf-8', 'ignore'))
+        return data['choices'][0]['message']['content'], None
+    except Exception as e:  # noqa: BLE001
+        return None, str(e)
+
+
+def llm_classify_earnings_titles(items, api_key, base_url, model, batch=30):
+    """智谱按公告标题语义批量判定利好/利空/中性。返回与 items 等长的 list[dict]；失败返回 None。"""
+    if not items:
+        return []
+    out = [None] * len(items)
+    for start in range(0, len(items), batch):
+        chunk = items[start:start + batch]
+        lines = ['%d. %s' % (start + k, (it.get('title') or '').strip()[:100]) for k, it in enumerate(chunk)]
+        user = (
+            '以下是 A股 上市公司公告标题，请按"实际含义"判断每条对业绩/经营的方向：\n%s\n\n'
+            '要求：仅依据标题，不编造数字。输出严格 JSON（不要任何解释文字）：\n'
+            '{"items":[{"i":0,"sentiment":"bull","reason":"一句话理由"},...]}\n'
+            'sentiment=bull(利好)/bear(利空)/neutral(中性)。注意语义而非机械关键词：'
+            '"扭亏为盈/拟回购/高分红/中标/大额订单/预增且幅度大"判利好；"预减/下修/亏损扩大/暴雷/风险警示/立案"判利空；'
+            '"预增但幅度收窄/例行披露/股东大会通知"判中性。items 数组必须与输入条数相同、顺序一致。'
+        ) % '\n'.join(lines)
+        system = ('你是 A股 财报公告研判助手。只依据公告标题客观判断利好/利空/中性，不预测、不荐股。'
+                  '输出必须为合法 JSON。')
+        content, err = call_llm(system, user, api_key, base_url, model)
+        if not content:
+            return None
+        txt = content.strip()
+        if txt.startswith('```'):
+            txt = re.sub(r'^```[a-zA-Z]*\n?', '', txt)
+            txt = txt.rstrip('`').strip()
+        try:
+            obj = json.loads(txt)
+        except Exception:
+            m = re.search(r'\{.*\}', content, re.S)
+            if not m:
+                return None
+            try:
+                obj = json.loads(m.group(0))
+            except Exception:
+                return None
+        arr = obj.get('items') or []
+        if not isinstance(arr, list) or len(arr) < len(chunk):
+            return None
+        for r in arr:
+            i = r.get('i')
+            if not isinstance(i, int) or not (0 <= i < len(items)):
+                continue
+            s = str(r.get('sentiment') or 'neutral').strip().lower()
+            if s not in ('bull', 'bear', 'neutral'):
+                continue
+            out[i] = {'sentiment': s, 'reason': str(r.get('reason') or '').strip()}
+        if any(x is None for x in out[start:start + batch]):
+            return None
+    return out
+
+
 def build_earnings():
     """引擎 B：财报舆情 -> 个股参考权重。返回 dict（overview/stocks/items）。"""
     try:
@@ -506,6 +583,31 @@ def build_earnings():
                           "art_code": it.get("art_code") or ""})
         items = items[:50]
     log(f"    -> 财报相关 {len(items)} 条")
+
+    # ---- 方向判定：优先智谱按标题语义（读实际含义），失败/无 key 回退关键词 classify ----
+    earn_judge = {'used': False, 'model': None}
+    for envk, base, model in (('ZHIPU_API_KEY', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4-flash'),
+                              ('SILICONFLOW_API_KEY', 'https://api.siliconflow.cn/v1', 'Qwen/Qwen3-8B')):
+        key = (os.environ.get(envk) or '').strip()
+        if not key:
+            continue
+        try:
+            judged = llm_classify_earnings_titles(items, key, base, model)
+        except Exception as e:  # noqa: BLE001
+            judged = None
+            log(f"    · 智谱财报判定失败: {e}")
+        if judged is not None and len(judged) == len(items):
+            for i, it in enumerate(items):
+                if judged[i]:
+                    it['sentiment'] = judged[i]['sentiment']
+                    it['reason'] = judged[i]['reason']
+            earn_judge = {'used': True, 'model': model}
+            log(f"    -> 财报方向由智谱判定({model}) 完成")
+            break
+        else:
+            log("    · 智谱财报判定不可用，回退关键词 classify")
+    if not earn_judge['used']:
+        log("    -> 财报方向：关键词 classify（智谱未启用/失败）")
 
     # 聚合个股参考权重
     agg = {}
