@@ -615,13 +615,13 @@ def main():
             # 智谱判定：全部新闻按方向 + 强度进入 matched（kws 留空，由 secs 驱动综述）
             matched = build_matched_from_judged(items, judged)
             judge_suffix = ' · 🤖智谱判定(%s)' % llm_judge['model']
-            log(f"    -> 方向由智谱判定（{len(matched)} 条，on={sum(m['on'] for m in matched)} / "
+            print(f"    -> 方向由智谱判定（{len(matched)} 条，on={sum(m['on'] for m in matched)} / "
                 f"off={sum(m['off'] for m in matched)}）")
     except Exception as e:  # noqa: BLE001
         # LLM 成功路径下游异常 → 整体回退词库，绝不阻塞主流程
         matched = None
         llm_judge = {'used': False, 'model': None, 'error': 'LLM 路径异常已回退词库: %s' % e}
-        log("    !! 智谱判定路径异常，回退词库: %s" % e)
+        print("    !! 智谱判定路径异常，回退词库: %s" % e)
     if matched is None:
         matched = item_scan(items, lex)
         judge_suffix = ''
