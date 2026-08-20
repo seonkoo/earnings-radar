@@ -323,7 +323,7 @@ def llm_classify_items(items, api_key, base_url, model, batch=25):
             if content:
                 break
         if not content:
-            return None
+            raise RuntimeError('智谱判定调用失败: %s' % (err or 'empty'))
         txt = content.strip()
         if txt.startswith('```'):
             txt = re.sub(r'^```[a-zA-Z]*\n?', '', txt)
@@ -333,14 +333,14 @@ def llm_classify_items(items, api_key, base_url, model, batch=25):
         except Exception:
             m = re.search(r'\{.*\}', content, re.S)
             if not m:
-                return None
+                raise RuntimeError('智谱判定输出非法 JSON: %s' % content[:200])
             try:
                 obj = json.loads(m.group(0))
             except Exception:
-                return None
+                raise RuntimeError('智谱判定输出非法 JSON: %s' % content[:200])
         arr = obj.get('items') or []
         if not isinstance(arr, list) or len(arr) < len(chunk):
-            return None
+            raise RuntimeError('智谱判定条数不足: 期望≥%d 实得%d' % (len(chunk), len(arr)))
         for r in arr:
             i = r.get('i')
             if not isinstance(i, int) or not (0 <= i < len(items)):
@@ -357,7 +357,7 @@ def llm_classify_items(items, api_key, base_url, model, batch=25):
             out[i] = {'dir': d, 'strength': strength, 'secs': secs, 'cat': cat,
                       'reason': str(r.get('reason') or '').strip()}
         if any(x is None for x in out[start:start + batch]):
-            return None
+            raise RuntimeError('智谱判定部分条目缺失（批次 %d-%d）' % (start, start + batch))
     return out
 
 
