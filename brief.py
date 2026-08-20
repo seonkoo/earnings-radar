@@ -177,7 +177,7 @@ def call_llm(system, user, api_key, base_url, model, timeout=50):
         return None, str(e)
 
 
-def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_flow=None, overseas=None):
+def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_flow=None, overseas=None, macro=None):
     """用 LLM 把 top 新闻压缩成综述 + 逐条要点；只基于给定新闻，不预测不荐股。"""
     if not top:
         return {'used': False, 'error': 'empty items'}
@@ -213,16 +213,40 @@ def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_f
         )
     if overseas:
         ov_parts = []
+        us_up = []
         for it in overseas:
             if it.get('pct') is None:
                 continue
             ov_parts.append('%s %+.2f%%' % (it.get('name') or it.get('code'), it.get('pct')))
+            if it.get('name') in ('道琼斯', '标普500', '纳斯达克') and it.get('pct', 0) >= 1:
+                us_up.append('%s %+.2f%%' % (it.get('name'), it.get('pct')))
         if ov_parts:
             user += (
                 '\n\n补充数据·外盘行情（美股为前一日收盘，港股/亚太/欧股为最新交易日）：\n'
                 '，'.join(ov_parts) + '。\n'
-                '若外盘明显走弱（如亚太指数跌超 3% 或美股跌超 1.5%），请在 summary 中提示外部风险对 A 股的传导，'
+                '若外盘明显走弱（亚太指数跌超 3% 或美股跌超 1.5%）或已现熔断，请在 summary 中提示外部风险对 A 股的传导；'
+                '若美股明显走强（≥+1%，如 ' + ('、'.join(us_up) if us_up else '道指/标普/纳指上涨') + '）也可提示外部提振，'
                 '但不得凭空编造外盘数字。'
+            )
+    if macro and macro.get('available'):
+        parts = []
+        if macro.get('us10y'):
+            m = macro['us10y']
+            parts.append('美债10Y %.2f%%（日变动 %+.2f%%）' % (m['v'], m.get('chg') or 0))
+        if macro.get('us2y'):
+            m = macro['us2y']
+            parts.append('美债2Y %.2f%%（日变动 %+.2f%%）' % (m['v'], m.get('chg') or 0))
+        if macro.get('spread') is not None:
+            inv = '（倒挂）' if macro['spread'] < 0 else ''
+            parts.append('10Y-2Y 利差 %.2f%%%s' % (macro['spread'], inv))
+        if macro.get('fed'):
+            m = macro['fed']
+            parts.append('联邦基金利率 %.2f%%（日变动 %+.2f%%）' % (m['v'], m.get('chg') or 0))
+        if parts:
+            user += (
+                '\n\n补充数据·海外宏观（来源 FRED）：\n' + '；'.join(parts) + '。\n'
+                '请在 summary 中点评美债/利率取向：美债收益率上行或利差走阔通常压制成长股估值、偏 risk-off；'
+                '10Y-2Y 利差倒挂是衰退预警；美联储加息/缩表偏收紧。仅基于以上数字，不得编造。'
             )
     system = ('你是 A股 市场新闻摘要助手。把给定的财经新闻条目用中文压缩成客观、可追溯的每日综述与逐条要点。'
               '规则：1) 只能基于提供的新闻，不得编造；2) 不得预测后市涨跌、不得给出任何买卖/仓位建议；'
@@ -259,23 +283,42 @@ def llm_summarize(top, regime_label, summary_kw, api_key, base_url, model, etf_f
     return {'used': bool(summary or points), 'model': model, 'summary': summary, 'error': None}
 
 
-def oversea_risk_level(indices):
-    """外盘风险分级：0 无 / 1 弱 / 2 强。
+# 熔断/重挫阈值：韩国 KOSPI side-1 熔断为 -8%（side-2 -15% / side-3 -20%）；
+# 日本为波动熔断，这里以 -8% 标注"日股重挫"。触及时视为外部系统性风险。
+CIRCUIT_KOSPI = -8.0
+CIRCUIT_NIKKEI = -8.0
 
-    强(2)：韩国KOSPI 或 日经225 ≤ -3%           —— 亚太系统性风险日
-    弱(1)：美股三大(道琼斯/标普500/纳斯达克)任一 ≤ -1.5%，或 恒生 ≤ -2%，或 欧股 ≤ -2%
-    返回 (level, hits)，hits 为命中的「名称 涨跌幅%」文本列表。
+
+def oversea_risk_level(indices):
+    """外盘风险分级 + 熔断检测。
+
+    熔断(3)：韩国KOSPI ≤ -8%（side-1 熔断）或 日经225 ≤ -8%（重挫）
+    强(2)：韩国KOSPI 或 日经225 ≤ -3%（但未触熔断）
+    弱(1)：美股三大任一 ≤ -1.5%，或 恒生 ≤ -2%，或 欧股 ≤ -2%
+    返回 (level, hits, circuit, circuit_name)
     """
     if not indices:
-        return 0, []
+        return 0, [], False, None
     level, hits = 0, []
+    circuit = False
+    circuit_name = None
     for it in indices:
         name = it.get('name') or ''
         pct = it.get('pct')
         if pct is None:
             continue
-        if name in ('韩国KOSPI', '日经225') and pct <= -3:
-            level = 2
+        if name == '韩国KOSPI' and pct <= CIRCUIT_KOSPI:
+            level = 3
+            circuit = True
+            circuit_name = '韩股熔断（一级）'
+            hits.append('%s %+.2f%%' % (name, pct))
+        elif name == '日经225' and pct <= CIRCUIT_NIKKEI:
+            level = 3
+            circuit = True
+            circuit_name = '日股重挫'
+            hits.append('%s %+.2f%%' % (name, pct))
+        elif name in ('韩国KOSPI', '日经225') and pct <= -3:
+            level = max(level, 2)
             hits.append('%s %+.2f%%' % (name, pct))
         elif name in ('道琼斯', '标普500', '纳斯达克') and pct <= -1.5:
             level = max(level, 1)
@@ -286,7 +329,7 @@ def oversea_risk_level(indices):
         elif name in ('欧洲斯托克50', '德国DAX30') and pct <= -2:
             level = max(level, 1)
             hits.append('%s %+.2f%%' % (name, pct))
-    return level, hits[:5]
+    return level, hits[:5], circuit, circuit_name
 
 
 def indices_of(text, kw):
@@ -370,17 +413,19 @@ def main():
         lex = {"negators": ["严查", "打击", "收紧"], "deniers": ["暂未", "未落地", "落空"],
                "negatorWindow": 10, "keywords": []}
 
-    # ETF 主力资金流 + 外盘指数（来自同目录 latest.json，由 generate.py 先跑生成；供 AI 解读/regime 参考）
+    # ETF 主力资金流 + 外盘指数 + 海外宏观（来自同目录 latest.json，由 generate.py 先跑生成；供 AI 解读/regime 参考）
     etf_flow = None
     overseas = None
+    macro = None
     latest_path = os.path.join(here, 'latest.json')
     if os.path.exists(latest_path):
         try:
             lj = json.load(open(latest_path, encoding='utf-8'))
             etf_flow = lj.get('etf')
             overseas = lj.get('overseas')
+            macro = lj.get('macro')
         except Exception:  # noqa: BLE001
-            etf_flow, overseas = None, None
+            etf_flow, overseas, macro = None, None, None
 
     items = []
     src_stat = []
@@ -444,9 +489,14 @@ def main():
     # 弱风险(+25%)：美股跌≥1.5% 或 恒生/欧股跌≥2%；强风险(+50% 且进攻封顶为平缓)：KOSPI/日经跌≥3%
     # 设计理由：外盘风险是"给进攻信心打折"而非"直接反转"，只有词库本身偏空才可能翻避险；
     # 强风险下禁止判"进攻"（亚太系统性风险日），最多给"平缓 · 外盘风险"。
-    risk_level, risk_hits = oversea_risk_level(overseas)
+    risk_level, risk_hits, circuit, circuit_name = oversea_risk_level(overseas)
     risk_note = '；'.join(risk_hits)
-    if risk_level >= 1:
+    if circuit:
+        # 熔断/重挫：外部系统性风险，无视词库基调，直接判避险
+        regime, label, strength = 'off', (circuit_name or '外盘熔断') + ' · 强制避险', 1.0
+        off = on + off
+        on = 0
+    elif risk_level >= 1:
         bias = 0.25 if risk_level == 1 else 0.50
         off += (on + off) * bias
         total = on + off
@@ -511,7 +561,7 @@ def main():
         if not key:
             continue
         try:
-            res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow, overseas)
+            res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow, overseas, macro)
         except Exception as e:
             res = {'used': False, 'error': str(e)}
         if res and res.get('used'):
@@ -523,13 +573,23 @@ def main():
             llm = {'used': False, 'model': model, 'error': (res or {}).get('error')}
     src_suffix = (' · 🤖AI辅助(%s)' % llm['model']) if llm['used'] else ' · 词库生成'
 
+    # 全球个股联动（词库 cat=外围 命中，如海力士/英伟达/三星/台积电 → A股板块）
+    global_items = []
+    for m in top:
+        if '外围' in (m.get('cats') or {}):
+            global_items.append({'title': m['title'], 'brief': m['brief'], 'dir': m['macro_dir'],
+                                 'secs': m['secs'], 'kws': m['kws']})
+
     brief = {
         'generated_at': TODAY.strftime('%Y-%m-%d %H:%M'),
         'date': TODAY.strftime('%Y-%m-%d'),
         'source': ' | '.join(src_stat) + src_suffix,
         'regime': {'regime': regime, 'label': label, 'onScore': round(on, 1),
                    'offScore': round(off, 1), 'strength': round(strength, 2)},
-        'overseaRisk': {'level': risk_level, 'hits': risk_hits, 'note': risk_note},
+        'overseaRisk': {'level': risk_level, 'hits': risk_hits, 'note': risk_note,
+                        'circuit': circuit, 'circuit_name': circuit_name},
+        'macro': macro,
+        'globalItems': global_items,
         'summary': summary,
         'summary_kw': summary_kw,
         'factors': factors,
