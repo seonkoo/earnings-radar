@@ -289,6 +289,95 @@ CIRCUIT_KOSPI = -8.0
 CIRCUIT_NIKKEI = -8.0
 
 
+def llm_classify_items(items, api_key, base_url, model, batch=30):
+    """智谱按实际内容（标题+摘要）批量判定新闻方向。返回与 items 等长的 list[dict]。
+
+    字段：dir(on/off/flat)、strength(1-5)、secs(板块)、cat(类别)、reason(一句理由)。
+    任一批解析失败 / 条数不足 → 返回 None（调用方整体降级词库）。
+    """
+    if not items:
+        return []
+    out = [None] * len(items)
+    for start in range(0, len(items), batch):
+        chunk = items[start:start + batch]
+        lines = []
+        for k, it in enumerate(chunk):
+            title = (it.get('title') or '').strip().replace('\n', ' ')[:80]
+            brief = (it.get('brief') or it.get('text') or '').strip().replace('\n', ' ')[:100]
+            lines.append('%d. %s｜%s' % (start + k, title, brief))
+        user = (
+            '以下是当日 A股财经新闻（编号. 标题｜摘要），请逐条判断其对 A股市场的方向与影响：\n%s\n\n'
+            '要求：仅依据给定文本，不预测涨跌、不荐股、不编造。输出严格 JSON（不要任何解释文字）：\n'
+            '{"items":[{"i":0,"dir":"on","strength":3,"secs":["半导体"],"cat":"产业","reason":"一句话理由"},...]}\n'
+            '字段说明：dir=on(利好/偏多) 或 off(利空/偏空) 或 flat(中性)；strength=影响强度 1-5；'
+            'secs=涉及的 A股板块名（0-3 个，中文）；cat=类别（产业/政策/宏观/海外/资金/风险/其他）；'
+            'reason=判断依据的一句话。注意语义而非关键词：如"不及预期""承压""待落地"应判利空或中性，'
+            '"回购/中标/超预期/放量"判利好。若新闻主体是境外公司（如海力士/英伟达/三星/台积电/特斯拉等）'
+            '对 A股 的联动，cat 用"外围"。items 数组必须与输入条数相同、顺序一致。'
+        ) % '\n'.join(lines)
+        system = ('你是 A股 市场新闻研判助手。只依据给定新闻文本客观判断利好/利空/中性及影响，'
+                  '不预测、不荐股。输出必须为合法 JSON。')
+        content, err = call_llm(system, user, api_key, base_url, model)
+        if not content:
+            return None
+        txt = content.strip()
+        if txt.startswith('```'):
+            txt = re.sub(r'^```[a-zA-Z]*\n?', '', txt)
+            txt = txt.rstrip('`').strip()
+        try:
+            obj = json.loads(txt)
+        except Exception:
+            m = re.search(r'\{.*\}', content, re.S)
+            if not m:
+                return None
+            try:
+                obj = json.loads(m.group(0))
+            except Exception:
+                return None
+        arr = obj.get('items') or []
+        if not isinstance(arr, list) or len(arr) < len(chunk):
+            return None
+        for r in arr:
+            i = r.get('i')
+            if not isinstance(i, int) or not (0 <= i < len(items)):
+                continue
+            d = str(r.get('dir') or 'flat').strip().lower()
+            if d not in ('on', 'off', 'flat'):
+                continue
+            secs = [str(s).strip() for s in (r.get('secs') or []) if str(s).strip()][:4]
+            cat = str(r.get('cat') or '其他').strip() or '其他'
+            try:
+                strength = max(1, min(5, int(r.get('strength') or 3)))
+            except Exception:  # noqa: BLE001
+                strength = 3
+            out[i] = {'dir': d, 'strength': strength, 'secs': secs, 'cat': cat,
+                      'reason': str(r.get('reason') or '').strip()}
+        if any(x is None for x in out[start:start + batch]):
+            return None
+    return out
+
+
+def build_matched_from_judged(items, judged):
+    """把智谱判定结果映射为 matched（与词库 item_scan 输出同构），按强度降序。"""
+    matched = []
+    for i, it in enumerate(items):
+        j = judged[i] if i < len(judged) else None
+        if not j:
+            continue
+        d = j['dir']
+        st = j['strength']
+        matched.append({
+            'title': it.get('title', ''), 'brief': it.get('brief', ''),
+            'src': it.get('src', ''), 'time': it.get('time', ''),
+            'weight': st, 'on': st if d == 'on' else 0, 'off': st if d == 'off' else 0,
+            'macro_dir': d, 'secs': j['secs'], 'kws': [],
+            'cats': {j['cat']: (st if d != 'flat' else 0)},
+            'judge_note': j.get('reason', ''),
+        })
+    matched.sort(key=lambda x: x['weight'], reverse=True)
+    return matched
+
+
 def oversea_risk_level(indices):
     """外盘风险分级 + 熔断检测。
 
@@ -468,7 +557,37 @@ def main():
         except Exception as e:
             src_stat.append('东方财富 失败: %s' % e)
 
-    matched = item_scan(items, lex)
+    matched = None
+    top = None
+
+    # ---- 方向判定：优先智谱（读实际内容语义），失败 / 无 key 回退词库 ----
+    llm_judge = {'used': False, 'model': None, 'error': None}
+    judge_providers = [
+        ('ZHIPU_API_KEY', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4-flash'),
+        ('SILICONFLOW_API_KEY', 'https://api.siliconflow.cn/v1', 'Qwen/Qwen3-8B'),
+    ]
+    judged = None
+    for envk, base, model in judge_providers:
+        key = (os.environ.get(envk) or '').strip()
+        if not key:
+            continue
+        try:
+            judged = llm_classify_items(items, key, base, model)
+        except Exception as e:  # noqa: BLE001
+            judged = None
+            llm_judge = {'used': False, 'model': model, 'error': str(e)}
+        if judged is not None and len(judged) == len(items):
+            llm_judge = {'used': True, 'model': model, 'error': None}
+            break
+    if llm_judge['used']:
+        # 智谱判定：全部新闻按方向 + 强度进入 matched（kws 留空，由 secs 驱动综述）
+        matched = build_matched_from_judged(items, judged)
+        judge_suffix = ' · 🤖智谱判定(%s)' % llm_judge['model']
+        log(f"    -> 方向由智谱判定（{len(matched)} 条，on={sum(m['on'] for m in matched)} / "
+            f"off={sum(m['off'] for m in matched)}）")
+    else:
+        matched = item_scan(items, lex)
+        judge_suffix = ''
     top = matched[:14]
 
     on = sum(m['on'] for m in matched)
@@ -511,24 +630,41 @@ def main():
         if risk_level >= 2 and regime == 'on':
             regime, label = 'flat', '平缓 · 外盘风险'
 
-    # 综述：汇总 top drivers（按 macro 归类）
-    on_kw, off_kw = {}, {}
-    for m in matched:
-        for k in m['kws']:
-            mk = [x for x in lex.get('keywords', []) if x['kw'] == k]
-            mac = mk[0].get('macro', 0) if mk else 0
-            if mac == 1:
-                on_kw[k] = on_kw.get(k, 0) + 1
-            elif mac == -1:
-                off_kw[k] = off_kw.get(k, 0) + 1
-    on_drivers = sorted(on_kw, key=on_kw.get, reverse=True)[:5]
-    off_drivers = sorted(off_kw, key=off_kw.get, reverse=True)[:5]
-    sp = []
-    if on_drivers:
-        sp.append('进攻线索：' + '、'.join(on_drivers))
-    if off_drivers:
-        sp.append('避险线索：' + '、'.join(off_drivers))
-    summary_kw = '；'.join(sp) if sp else '当日新闻未触发显著关键词信号。'
+    # 综述：汇总 top drivers（智谱模式按板块聚合，词库模式按关键词宏观轴聚合）
+    if llm_judge['used']:
+        on_secs, off_secs = {}, {}
+        for m in matched:
+            bucket = on_secs if m['on'] > 0 else (off_secs if m['off'] > 0 else None)
+            if bucket is None:
+                continue
+            for s in m['secs']:
+                bucket[s] = bucket.get(s, 0) + 1
+        on_drivers = sorted(on_secs, key=on_secs.get, reverse=True)[:5]
+        off_drivers = sorted(off_secs, key=off_secs.get, reverse=True)[:5]
+        sp = []
+        if on_drivers:
+            sp.append('进攻板块：' + '、'.join(on_drivers))
+        if off_drivers:
+            sp.append('避险板块：' + '、'.join(off_drivers))
+        summary_kw = '；'.join(sp) if sp else '智谱判定：当日新闻未见显著方向。'
+    else:
+        on_kw, off_kw = {}, {}
+        for m in matched:
+            for k in m['kws']:
+                mk = [x for x in lex.get('keywords', []) if x['kw'] == k]
+                mac = mk[0].get('macro', 0) if mk else 0
+                if mac == 1:
+                    on_kw[k] = on_kw.get(k, 0) + 1
+                elif mac == -1:
+                    off_kw[k] = off_kw.get(k, 0) + 1
+        on_drivers = sorted(on_kw, key=on_kw.get, reverse=True)[:5]
+        off_drivers = sorted(off_kw, key=off_kw.get, reverse=True)[:5]
+        sp = []
+        if on_drivers:
+            sp.append('进攻线索：' + '、'.join(on_drivers))
+        if off_drivers:
+            sp.append('避险线索：' + '、'.join(off_drivers))
+        summary_kw = '；'.join(sp) if sp else '当日新闻未触发显著关键词信号。'
     summary = summary_kw
 
     # 多维影响因素（政策 / 海外 / 宏观 / 产业 …）按 cat 聚合
@@ -577,7 +713,10 @@ def main():
             break
         else:
             llm = {'used': False, 'model': model, 'error': (res or {}).get('error')}
-    src_suffix = (' · 🤖AI辅助(%s)' % llm['model']) if llm['used'] else ' · 词库生成'
+    src_suffix = (' · 🤖AI辅助(%s)' % llm['model']) if llm['used'] else ''
+    src_suffix = judge_suffix + src_suffix
+    if not (llm_judge['used'] or llm['used']):
+        src_suffix = ' · 词库生成'
 
     # 全球个股联动（词库 cat=外围 命中，如海力士/英伟达/三星/台积电 → A股板块）
     global_items = []
@@ -600,9 +739,11 @@ def main():
         'summary_kw': summary_kw,
         'factors': factors,
         'llm': llm,
+        'llm_judge': llm_judge,
         'items': [{'title': m['title'], 'brief': m['brief'], 'dir': m['macro_dir'],
                    'secs': m['secs'], 'kws': m['kws'], 'src': m['src'], 'time': m['time'],
-                   'weight': m['weight'], 'ai_note': m.get('ai_note', '')} for m in top]
+                   'weight': m['weight'], 'ai_note': m.get('ai_note', ''),
+                   'judge_note': m.get('judge_note', '')} for m in top]
     }
     out_path = os.path.join(here, 'brief.json')
     with open(out_path, 'w', encoding='utf-8') as f:
