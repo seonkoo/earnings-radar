@@ -305,21 +305,24 @@ FRED_SERIES = {
 }
 
 
+FRED_UA = "curl/8.0"   # 中性 UA：实测 FRED 对浏览器 UA(Chrome 系) 会限流/超时，curl UA 稳定（沙箱与 Actions 均验证）
+
+
 def fetch_fred_csv(series):
     """取 FRED 单序列 CSV，返回 [(date, value_or_None), ...]（按日期升序）。带重试抗瞬时抖动。"""
     url = FRED_BASE + series
     raw = None
     last_err = None
-    for attempt in range(1, 3):
+    for attempt in range(1, 4):
         try:
             req = urllib.request.Request(url)
-            req.add_header("User-Agent", UA)
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            req.add_header("User-Agent", FRED_UA)
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 raw = resp.read().decode("utf-8", "ignore")
             break
         except Exception as e:  # noqa: BLE001
             last_err = e
-            if attempt < 2:
+            if attempt < 3:
                 time.sleep(1.5 * attempt)
     if raw is None:
         log(f"    · FRED {series} 失败: {last_err}")
