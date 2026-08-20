@@ -7,7 +7,7 @@ brief.py — 每日要闻简报生成器（服务端，GitHub Actions 运行）
   同花顺快讯（主·优先） + 财联社电报（主） + 新浪财经 7x24 滚动（主·综合补充） + 东方财富快讯（备）
 无第三方依赖（仅标准库 urllib / json / re / datetime）。
 """
-import json, os, re, urllib.request, urllib.error, datetime
+import json, os, re, time, urllib.request, urllib.error, datetime
 
 # 北京时间（用于时间戳转换与生成时间标注）
 BJ = datetime.timezone(datetime.timedelta(hours=8))
@@ -560,10 +560,16 @@ def main():
         key = (os.environ.get(envk) or '').strip()
         if not key:
             continue
-        try:
-            res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow, overseas, macro)
-        except Exception as e:
-            res = {'used': False, 'error': str(e)}
+        res = None
+        # 抗瞬时超时：失败后重试一次（LLM 是增强项，失败自动回退词库，绝不阻塞）
+        for _attempt in range(2):
+            try:
+                res = llm_summarize(top, label, summary_kw, key, base, model, etf_flow, overseas, macro)
+            except Exception as e:
+                res = {'used': False, 'error': str(e)}
+            if res and res.get('used'):
+                break
+            time.sleep(3)
         if res and res.get('used'):
             llm = {'used': True, 'model': model, 'error': res.get('error')}
             if res.get('summary'):
