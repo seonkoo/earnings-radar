@@ -187,7 +187,7 @@ nav.bottom button.active{color:var(--accent);}
     <div class="card">
       <h3>🗓️ 历史快照（近 14 日）</h3>
       <div id="earnHist"><div class="empty">无历史</div></div>
-      <div class="hint" style="margin-top:8px;">每次定时抓取归档一帧，回来可回看这 7–8 天财报舆情冷暖切换。利好/利空为标题关键词启发式判定，存在误差。</div>
+      <div class="hint" style="margin-top:8px;">每次定时抓取归档一帧，回来可回看这 7–8 天财报舆情冷暖切换。利好/利空由智谱按公告语义判定（词库兜底），每条约一句判断理由，仅供参考。</div>
     </div>
   </section>
 
@@ -586,7 +586,9 @@ function renderEarnItems(items,limit,elId,compact){var el=document.getElementByI
     var sc=(it.stocks||[]).map(function(s){return (s.name||s.code)+'('+s.code+')';}).join('、');
     return '<div class="item '+it.sentiment+'"><div class="h">'+earnPill(it.sentiment)+'<span class="note">'+(it.date||'')+'</span></div>'
       +'<div class="ti">'+esc(it.title)+'</div>'
-      +(sc?'<div class="sc">涉及：'+esc(sc)+'</div>':'')+'</div>';
+      +(sc?'<div class="sc">涉及：'+esc(sc)+'</div>':'')
+      +(it.reason?'<div class="hint" style="margin-top:2px;color:#8b949e;">🤖 '+esc(it.reason)+'</div>':'')
+      +'</div>';
   }).join('');}
 function renderEarnOverviewTag(ov){var el=document.getElementById('earnOv');if(el)el.innerHTML='利好 '+(ov.bull||0)+' · 利空 '+(ov.bear||0)+' · 中性 '+(ov.neutral||0)+' · 共 '+(ov.total||0)+' 条';}
 function renderEarnHome(){if(!state.earnings)return;var e=state.earnings;var el=document.getElementById('earnHome');if(!el)return;
@@ -842,7 +844,7 @@ function briefFactorsHtml(factors){
   return '<div style="margin:10px 0;"><div style="font-size:12px;color:#8b949e;margin-bottom:4px;">📊 多维影响因素（词库分类聚合）</div>'+rows.join('')+'</div>';
 }
 function briefItemsHtml(items,limit){
-  if(!items||!items.length)return '<div class="empty">暂无命中关键词的新闻条目。</div>';
+  if(!items||!items.length)return '<div class="empty">暂无新闻条目。</div>';
   return items.slice(0,limit||14).map(function(m){
     var dcls=m.macro_dir==='on'?'up':(m.macro_dir==='off'?'down':'flatc');
     var dtag=m.macro_dir==='on'?'▲进攻':(m.macro_dir==='off'?'▼避险':'▬中性');
@@ -851,6 +853,7 @@ function briefItemsHtml(items,limit){
     return '<div class="brief-item"><span class="bdir '+dcls+'">'+dtag+'</span>'+
       '<div style="flex:1;min-width:0;"><b>'+esc(m.title||'')+'</b>'+
       (m.brief?'<div class="hint" style="margin-top:2px;">'+esc(m.brief)+'</div>':'')+
+      (m.judge_note?'<div class="ai-note"><span class="ai-tag">🧠</span>'+esc(m.judge_note)+'</div>':'')+
       (secs?'<div class="hint" style="margin-top:2px;color:#7d8da3;">涉及：'+secs+'</div>':'')+
       (meta?'<div class="hint" style="margin-top:1px;color:#5e6b7d;">'+esc(meta)+'</div>':'')+
       (m.ai_note?'<div class="ai-note"><span class="ai-tag">AI</span>'+esc(m.ai_note)+'</div>':'')+
