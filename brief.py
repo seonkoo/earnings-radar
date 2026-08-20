@@ -585,39 +585,47 @@ def main():
     matched = None
     top = None
 
-    # ---- 方向判定：优先智谱（读实际内容语义），失败 / 无 key 回退词库 ----
+    # ---- 方向判定：优先智谱（读实际内容语义），任何异常 / 无 key 整体回退词库 ----
     llm_judge = {'used': False, 'model': None, 'error': None}
-    judge_providers = [
-        ('ZHIPU_API_KEY', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4-flash'),
-        ('SILICONFLOW_API_KEY', 'https://api.siliconflow.cn/v1', 'Qwen/Qwen3-8B'),
-    ]
-    judged = None
-    judge_err = '未配置可用 LLM Key'
-    for envk, base, model in judge_providers:
-        key = (os.environ.get(envk) or '').strip()
-        if not key:
-            continue
-        try:
-            judged = llm_classify_items(items, key, base, model)
-            judge_err = 'LLM 判定输出解析失败/超时，回退词库'
-        except Exception as e:  # noqa: BLE001
-            judged = None
-            judge_err = str(e)
-            llm_judge = {'used': False, 'model': model, 'error': str(e)}
-        if judged is not None and len(judged) == len(items):
-            llm_judge = {'used': True, 'model': model, 'error': None}
-            break
-    if not llm_judge['used']:
-        llm_judge = {'used': False, 'model': llm_judge['model'], 'error': judge_err}
-    if llm_judge['used']:
-        # 智谱判定：全部新闻按方向 + 强度进入 matched（kws 留空，由 secs 驱动综述）
-        matched = build_matched_from_judged(items, judged)
-        judge_suffix = ' · 🤖智谱判定(%s)' % llm_judge['model']
-        log(f"    -> 方向由智谱判定（{len(matched)} 条，on={sum(m['on'] for m in matched)} / "
-            f"off={sum(m['off'] for m in matched)}）")
-    else:
+    judge_suffix = ''
+    try:
+        judge_providers = [
+            ('ZHIPU_API_KEY', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4-flash'),
+            ('SILICONFLOW_API_KEY', 'https://api.siliconflow.cn/v1', 'Qwen/Qwen3-8B'),
+        ]
+        judged = None
+        judge_err = '未配置可用 LLM Key'
+        for envk, base, model in judge_providers:
+            key = (os.environ.get(envk) or '').strip()
+            if not key:
+                continue
+            try:
+                judged = llm_classify_items(items, key, base, model)
+                judge_err = 'LLM 判定输出解析失败/超时，回退词库'
+            except Exception as e:  # noqa: BLE001
+                judged = None
+                judge_err = str(e)
+                llm_judge = {'used': False, 'model': model, 'error': str(e)}
+            if judged is not None and len(judged) == len(items):
+                llm_judge = {'used': True, 'model': model, 'error': None}
+                break
+        if not llm_judge['used']:
+            llm_judge = {'used': False, 'model': llm_judge['model'], 'error': judge_err}
+        if llm_judge['used']:
+            # 智谱判定：全部新闻按方向 + 强度进入 matched（kws 留空，由 secs 驱动综述）
+            matched = build_matched_from_judged(items, judged)
+            judge_suffix = ' · 🤖智谱判定(%s)' % llm_judge['model']
+            log(f"    -> 方向由智谱判定（{len(matched)} 条，on={sum(m['on'] for m in matched)} / "
+                f"off={sum(m['off'] for m in matched)}）")
+    except Exception as e:  # noqa: BLE001
+        # LLM 成功路径下游异常 → 整体回退词库，绝不阻塞主流程
+        matched = None
+        llm_judge = {'used': False, 'model': None, 'error': 'LLM 路径异常已回退词库: %s' % e}
+        log("    !! 智谱判定路径异常，回退词库: %s" % e)
+    if matched is None:
         matched = item_scan(items, lex)
         judge_suffix = ''
+    top = matched[:14]
     top = matched[:14]
 
     on = sum(m['on'] for m in matched)
