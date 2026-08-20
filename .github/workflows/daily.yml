@@ -32,6 +32,9 @@ jobs:
           python-version: '3.11'
 
       - name: 抓取东方财富（板块资金流 + 财报公告）并生成快照
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
         run: python generate.py
 
       - name: 生成每日要闻简报（含可选 LLM 辅助：设 ZHIPU_API_KEY / SILICONFLOW_API_KEY 即启用，未设则词库生成）
