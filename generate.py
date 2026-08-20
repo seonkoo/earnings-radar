@@ -467,7 +467,7 @@ def fetch_announcements(page_size=PAGE_SIZE):
     raise last or RuntimeError("全部公告域名失败")
 
 
-def call_llm(system, user, api_key, base_url, model, timeout=50):
+def call_llm(system, user, api_key, base_url, model, timeout=50, max_tokens=1200):
     """OpenAI 兼容 chat/completions（仅标准库）。返回 (content, err)。"""
     if not api_key:
         return None, 'no api key'
@@ -477,7 +477,7 @@ def call_llm(system, user, api_key, base_url, model, timeout=50):
         'messages': [{'role': 'system', 'content': system},
                      {'role': 'user', 'content': user}],
         'temperature': 0.2,
-        'max_tokens': 1200,
+        'max_tokens': max_tokens,
         'response_format': {'type': 'json_object'},
     }).encode('utf-8')
     req = urllib.request.Request(url, data=body, headers={
@@ -493,7 +493,7 @@ def call_llm(system, user, api_key, base_url, model, timeout=50):
         return None, str(e)
 
 
-def llm_classify_earnings_titles(items, api_key, base_url, model, batch=30):
+def llm_classify_earnings_titles(items, api_key, base_url, model, batch=25):
     """智谱按公告标题语义批量判定利好/利空/中性。返回与 items 等长的 list[dict]；失败返回 None。"""
     if not items:
         return []
@@ -511,7 +511,11 @@ def llm_classify_earnings_titles(items, api_key, base_url, model, batch=30):
         ) % '\n'.join(lines)
         system = ('你是 A股 财报公告研判助手。只依据公告标题客观判断利好/利空/中性，不预测、不荐股。'
                   '输出必须为合法 JSON。')
-        content, err = call_llm(system, user, api_key, base_url, model)
+        content, err = None, None
+        for _t in range(2):   # 抗瞬时超时/截断：重试一次
+            content, err = call_llm(system, user, api_key, base_url, model, timeout=90, max_tokens=2500)
+            if content:
+                break
         if not content:
             return None
         txt = content.strip()
@@ -601,12 +605,14 @@ def build_earnings():
                 if judged[i]:
                     it['sentiment'] = judged[i]['sentiment']
                     it['reason'] = judged[i]['reason']
-            earn_judge = {'used': True, 'model': model}
+            earn_judge = {'used': True, 'model': model, 'error': None}
             log(f"    -> 财报方向由智谱判定({model}) 完成")
             break
         else:
+            earn_judge = {'used': False, 'model': model, 'error': 'LLM 输出解析失败/超时，回退关键词'}
             log("    · 智谱财报判定不可用，回退关键词 classify")
-    if not earn_judge['used']:
+    if not earn_judge['used'] and not earn_judge.get('error'):
+        earn_judge = {'used': False, 'model': None, 'error': '未配置可用 LLM Key'}
         log("    -> 财报方向：关键词 classify（智谱未启用/失败）")
 
     # 聚合个股参考权重
@@ -632,7 +638,8 @@ def build_earnings():
         "neutral": sum(1 for i in items if i["sentiment"] == "neutral"),
         "total": len(items),
     }
-    return {"overview": overview, "stocks": stocks_sorted[:60], "items": items[:120]}
+    return {"overview": overview, "stocks": stocks_sorted[:60], "items": items[:120],
+            "judge": earn_judge}
 
 
 # ============================== 主流程 ==============================
