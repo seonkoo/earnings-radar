@@ -1,5 +1,30 @@
 [
   {
+    "time": "2026-08-24T15:55:05+08:00",
+    "status": "ok",
+    "stats": {
+      "indices": 6,
+      "industry": 30,
+      "concept": 28,
+      "stocks": 12,
+      "hist_ok": 10,
+      "hist_fail": 10,
+      "out": 15,
+      "outStocks": 8,
+      "etf": 1579,
+      "etfAvail": true,
+      "overseas": 7,
+      "macro": "ok"
+    },
+    "earnings": {
+      "bull": 1,
+      "bear": 0,
+      "neutral": 6,
+      "total": 7
+    },
+    "file": "snapshots/2026-08-24-1555.json"
+  },
+  {
     "time": "2026-08-24T12:22:56+08:00",
     "status": "ok",
     "stats": {
