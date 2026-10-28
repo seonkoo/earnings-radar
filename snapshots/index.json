@@ -1,5 +1,30 @@
 [
   {
+    "time": "2026-10-28T21:48:02+08:00",
+    "status": "ok",
+    "stats": {
+      "indices": 6,
+      "industry": 30,
+      "concept": 0,
+      "stocks": 0,
+      "hist_ok": 6,
+      "hist_fail": 4,
+      "out": 0,
+      "outStocks": 0,
+      "etf": 0,
+      "etfAvail": false,
+      "overseas": 0,
+      "macro": "ok"
+    },
+    "earnings": {
+      "bull": 0,
+      "bear": 0,
+      "neutral": 4,
+      "total": 4
+    },
+    "file": "snapshots/2026-10-28-2148.json"
+  },
+  {
     "time": "2026-10-28T17:57:37+08:00",
     "status": "ok",
     "stats": {
@@ -2223,30 +2248,5 @@
       "total": 0
     },
     "file": "snapshots/2026-09-30-2118.json"
-  },
-  {
-    "time": "2026-09-30T17:57:14+08:00",
-    "status": "ok",
-    "stats": {
-      "indices": 6,
-      "industry": 30,
-      "concept": 30,
-      "stocks": 12,
-      "hist_ok": 8,
-      "hist_fail": 12,
-      "out": 15,
-      "outStocks": 8,
-      "etf": 898,
-      "etfAvail": true,
-      "overseas": 7,
-      "macro": "ok"
-    },
-    "earnings": {
-      "bull": 0,
-      "bear": 1,
-      "neutral": 2,
-      "total": 3
-    },
-    "file": "snapshots/2026-09-30-1757.json"
   }
 ]
